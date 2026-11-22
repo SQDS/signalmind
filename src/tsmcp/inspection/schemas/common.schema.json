@@ -1,0 +1,411 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signalmind:contract:common:1.0.0",
+  "title": "common",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "range": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/IntervalRef"
+    },
+    "observation": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/ToolObservation"
+    }
+  },
+  "required": [
+    "schema_version",
+    "range",
+    "observation"
+  ],
+  "description": "Reusable strict definitions and a standalone example envelope.",
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "SemanticVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[A-Za-z0-9.-]+)?$"
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "IntervalRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "channel_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "block_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "start_sample": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_sample": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "record_id",
+        "channel_id",
+        "block_id",
+        "start_sample",
+        "end_sample"
+      ],
+      "description": "0-based half-open [start_sample,end_sample) within ONE continuity block; block_id is not a storage chunk. end_sample > start_sample is semantic validation."
+    },
+    "Parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              },
+              "minItems": 0
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "description": "Array representation permits strict keys; names must also be unique."
+    },
+    "ToolObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "result_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "tool_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "tool_version": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "partial",
+            "not_applicable",
+            "insufficient_context",
+            "failed"
+          ]
+        },
+        "quality": {
+          "enum": [
+            "good",
+            "degraded",
+            "unusable",
+            "uncertain",
+            "not_assessed"
+          ]
+        },
+        "risk_score": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calibration_profile_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "score_is_probability": {
+          "type": "boolean"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "result_id",
+        "tool_id",
+        "tool_version",
+        "status",
+        "quality",
+        "risk_score",
+        "calibration_profile_id",
+        "score_is_probability",
+        "evidence_ids"
+      ],
+      "description": "Execution status is independent from quality. A failure is not good quality.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "failed",
+                  "not_applicable",
+                  "insufficient_context"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "quality": {
+                "const": "not_assessed"
+              },
+              "risk_score": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "SamplingRate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "numerator": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "denominator": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "numerator",
+        "denominator"
+      ]
+    },
+    "SourceBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "channel_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "block_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "source_version_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "n_samples": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "clock_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "sampling_kind": {
+          "enum": [
+            "uniform",
+            "irregular"
+          ]
+        },
+        "sampling_rate": {
+          "anyOf": [
+            {
+              "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SamplingRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "time_map_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uri"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content_digest": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+        }
+      },
+      "required": [
+        "record_id",
+        "channel_id",
+        "block_id",
+        "source_version_id",
+        "n_samples",
+        "clock_id",
+        "sampling_kind",
+        "sampling_rate",
+        "unit",
+        "time_map_ref",
+        "content_digest"
+      ],
+      "description": "Continuous acquisition block; may be stored across multiple storage chunks."
+    },
+    "ReadDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "range": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/IntervalRef"
+        },
+        "source_version_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "content_digest": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+        }
+      },
+      "required": [
+        "range",
+        "source_version_id",
+        "content_digest"
+      ]
+    },
+    "GlobalDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dependency_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "kind": {
+          "enum": [
+            "global_statistics",
+            "template",
+            "mask",
+            "time_mapping"
+          ]
+        },
+        "version_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "content_digest": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+        }
+      },
+      "required": [
+        "dependency_id",
+        "kind",
+        "version_id",
+        "content_digest"
+      ]
+    },
+    "CheckResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "check_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "mandatory": {
+          "type": "boolean"
+        },
+        "result": {
+          "enum": [
+            "pass",
+            "fail",
+            "not_evaluated"
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "check_id",
+        "mandatory",
+        "result",
+        "evidence_ids"
+      ]
+    },
+    "ToolDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tool_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "tool_version": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+        }
+      },
+      "required": [
+        "tool_id",
+        "tool_version"
+      ]
+    }
+  }
+}

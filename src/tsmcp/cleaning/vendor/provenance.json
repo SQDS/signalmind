@@ -1,0 +1,12 @@
+{
+  "frozen_v01.py": {
+    "original_sha256": "d3442a77876667add3f53f1ca39ccf272661479a1dabff073c26b35c8ff71d10",
+    "source_member": "SignalMind_Test_Pack_v0.3/src/frozen_v01.py",
+    "installed_sha256": "6d22aed6d60c2f50ae2862cba890cd482715c93089edd188ecddc5a1f5cee1d5"
+  },
+  "common.py": {
+    "original_sha256": "dba81246628cfc4e38e0613d687a8e452ce5faee14ab26dbe28f43a50d51bcb0",
+    "source_member": "SignalMind_Test_Pack_v0.3/src/common.py",
+    "installed_sha256": "dba81246628cfc4e38e0613d687a8e452ce5faee14ab26dbe28f43a50d51bcb0"
+  }
+}

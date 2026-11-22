@@ -1,0 +1,218 @@
+{
+  "channels": {
+    "ABP": [
+      {
+        "fallback": "mark_invalid",
+        "id": "abp_missing_short_interp",
+        "operation": "interpolate",
+        "parameters": {},
+        "selector": {
+          "kind": "missing"
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "abp_stuck_flat_mark",
+        "operation": "mark_invalid",
+        "parameters": {},
+        "selector": {
+          "kind": "flat",
+          "min_duration_s": 1.0,
+          "pad_samples": 2
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "abp_isolated_spike_interp",
+        "operation": "interpolate",
+        "parameters": {},
+        "selector": {
+          "factor": 2.0,
+          "kind": "outliers",
+          "pad_samples": 1,
+          "window_s": 10
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "abp_tone_50_if_narrowband",
+        "operation": "remove_tone",
+        "parameters": {
+          "frequency_hz": 50,
+          "window_s": 10
+        },
+        "selector": {
+          "kind": "all"
+        },
+        "when": {
+          "line_50_fraction": {
+            "min": 0.05
+          },
+          "line_50_ratio": {
+            "min": 5.0
+          }
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "abp_tone_60_if_narrowband",
+        "operation": "remove_tone",
+        "parameters": {
+          "frequency_hz": 60,
+          "window_s": 10
+        },
+        "selector": {
+          "kind": "all"
+        },
+        "when": {
+          "line_60_fraction": {
+            "min": 0.05
+          },
+          "line_60_ratio": {
+            "min": 5.0
+          }
+        }
+      }
+    ],
+    "ECG": [
+      {
+        "fallback": "mark_invalid",
+        "id": "ecg_missing_short_interp",
+        "operation": "interpolate",
+        "parameters": {},
+        "selector": {
+          "kind": "missing"
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "ecg_stuck_flat_mark",
+        "operation": "mark_invalid",
+        "parameters": {},
+        "selector": {
+          "kind": "flat",
+          "min_duration_s": 0.25,
+          "pad_samples": 2
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "ecg_tone_50_if_narrowband",
+        "operation": "remove_tone",
+        "parameters": {
+          "frequency_hz": 50,
+          "window_s": 10
+        },
+        "selector": {
+          "kind": "all"
+        },
+        "when": {
+          "line_50_fraction": {
+            "min": 0.05
+          },
+          "line_50_ratio": {
+            "min": 5.0
+          }
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "ecg_tone_60_if_narrowband",
+        "operation": "remove_tone",
+        "parameters": {
+          "frequency_hz": 60,
+          "window_s": 10
+        },
+        "selector": {
+          "kind": "all"
+        },
+        "when": {
+          "line_60_fraction": {
+            "min": 0.05
+          },
+          "line_60_ratio": {
+            "min": 5.0
+          }
+        }
+      }
+    ],
+    "PPG": [
+      {
+        "fallback": "mark_invalid",
+        "id": "ppg_missing_short_interp",
+        "operation": "interpolate",
+        "parameters": {},
+        "selector": {
+          "kind": "missing"
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "ppg_stuck_flat_mark",
+        "operation": "mark_invalid",
+        "parameters": {},
+        "selector": {
+          "kind": "flat",
+          "min_duration_s": 1.0,
+          "pad_samples": 2
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "ppg_isolated_spike_interp",
+        "operation": "interpolate",
+        "parameters": {},
+        "selector": {
+          "factor": 2.0,
+          "kind": "outliers",
+          "pad_samples": 1,
+          "window_s": 10
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "ppg_tone_50_if_narrowband",
+        "operation": "remove_tone",
+        "parameters": {
+          "frequency_hz": 50,
+          "window_s": 10
+        },
+        "selector": {
+          "kind": "all"
+        },
+        "when": {
+          "line_50_fraction": {
+            "min": 0.05
+          },
+          "line_50_ratio": {
+            "min": 5.0
+          }
+        }
+      },
+      {
+        "fallback": "preserve",
+        "id": "ppg_tone_60_if_narrowband",
+        "operation": "remove_tone",
+        "parameters": {
+          "frequency_hz": 60,
+          "window_s": 10
+        },
+        "selector": {
+          "kind": "all"
+        },
+        "when": {
+          "line_60_fraction": {
+            "min": 0.05
+          },
+          "line_60_ratio": {
+            "min": 5.0
+          }
+        }
+      }
+    ]
+  },
+  "goal": "Dataset-wide ECG/PPG/ABP policy: keep native sample grid, source units and morphology; linearly bridge only short nonfinite gaps (<=80 ms) and otherwise flag them invalid; flag exactly-stuck (flat) runs instead of fabricating signal; remove isolated <=80 ms outlier spikes in PPG/ABP only; remove 50/60 Hz narrowband tones only when band fraction and neighbouring-spectrum contrast both indicate real line interference. Gross non-physiological ECG artefact that cannot be detected structurally or repaired is preserved as observed.",
+  "max_gap_ms": 80,
+  "max_repair_ms": 80,
+  "schema_version": "signalmind.dataset-policy.v0.1"
+}

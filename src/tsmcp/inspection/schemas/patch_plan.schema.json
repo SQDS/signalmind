@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signalmind:contract:patch_plan:1.0.0",
+  "title": "patch_plan",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "patch_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "run_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "candidate_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "record_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "source_version_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "parent_version_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "candidate_version_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "parent_manifest_digest": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+    },
+    "patch_digest": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+    },
+    "candidate_digest": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+    },
+    "candidate_artifact_ref": {
+      "type": "string",
+      "format": "uri"
+    },
+    "acceptance_spec_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "acceptance_spec_version": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+    },
+    "requirements_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool_id": {
+            "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+          },
+          "tool_version": {
+            "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Parameter"
+            },
+            "minItems": 0
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "tool_id",
+          "tool_version",
+          "parameters",
+          "seed"
+        ]
+      },
+      "minItems": 1
+    },
+    "read_set": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/ReadDependency"
+      },
+      "minItems": 1
+    },
+    "write_set": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/IntervalRef"
+      },
+      "minItems": 1
+    },
+    "effect_set": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/IntervalRef"
+      },
+      "minItems": 1
+    },
+    "global_dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/GlobalDependency"
+      },
+      "minItems": 0
+    },
+    "idempotency_key": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    }
+  },
+  "required": [
+    "schema_version",
+    "patch_id",
+    "run_id",
+    "candidate_id",
+    "record_id",
+    "source_version_id",
+    "parent_version_id",
+    "candidate_version_id",
+    "parent_manifest_digest",
+    "patch_digest",
+    "candidate_digest",
+    "candidate_artifact_ref",
+    "acceptance_spec_id",
+    "acceptance_spec_version",
+    "requirements_id",
+    "operations",
+    "read_set",
+    "write_set",
+    "effect_set",
+    "global_dependencies",
+    "idempotency_key"
+  ],
+  "description": "Immutable proposed patch. Read-set includes halos; effect-set includes boundary checks."
+}

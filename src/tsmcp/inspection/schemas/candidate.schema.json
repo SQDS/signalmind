@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signalmind:contract:candidate:1.0.0",
+  "title": "candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "candidate_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "run_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "source_version_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "range": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/IntervalRef"
+    },
+    "state": {
+      "enum": [
+        "DISCOVERED",
+        "EVIDENCE_READY",
+        "DIAGNOSED",
+        "PLANNED",
+        "PATCH_READY",
+        "VALIDATED",
+        "REVIEWED",
+        "TERMINATED"
+      ]
+    },
+    "final_action": {
+      "anyOf": [
+        {
+          "enum": [
+            "KEEP",
+            "COMMIT_PATCH",
+            "MASK_UNUSABLE",
+            "UNRESOLVED"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "candidate_kind": {
+      "enum": [
+        "suspected_artifact",
+        "possible_physiology",
+        "unknown"
+      ]
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/ToolObservation"
+      },
+      "minItems": 1
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "patch_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "run_id",
+    "source_version_id",
+    "range",
+    "state",
+    "final_action",
+    "candidate_kind",
+    "observations",
+    "evidence_ids",
+    "patch_id"
+  ],
+  "description": "Located candidate; workflow state, execution status and quality are separate.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "TERMINATED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "final_action": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "not": {
+              "enum": [
+                "REVIEWED",
+                "TERMINATED"
+              ]
+            }
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "final_action": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

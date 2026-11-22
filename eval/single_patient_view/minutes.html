@@ -1,0 +1,22 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>单患者波形 · 逐分钟预览</title><style>
+*{box-sizing:border-box}body{font:16px/1.6 system-ui,sans-serif;color:#183342;background:#f6f8f9;margin:0}main{max-width:1280px;margin:auto;padding:18px}h1{font-size:1.5rem;margin:.25em 0}p{margin:.5em 0}nav{display:flex;gap:.6em;align-items:center;flex-wrap:wrap;margin:1em 0}button,select{font:inherit;max-width:100%;padding:5px 10px;color:inherit;background:white;border:1px solid #a7b5bb;border-radius:4px}button:disabled{opacity:.4}#image{display:block;width:100%;height:auto;background:white}#note,small{color:#445e69}a{color:#186e82}label{white-space:nowrap}@media(max-width:550px){main{padding:9px}nav{gap:.3em}select{width:100%}}
+</style><main><h1>单患者波形 · 逐分钟预览</h1><p id="summary"></p>
+<nav><button id="prev">← 上一分钟</button><button id="next">下一分钟 →</button><select id="select" aria-label="跳到指定分钟"></select><button id="ai">跳到 AI 圈选</button><label><input id="skip" type="checkbox">翻页时跳过全空页</label></nav>
+<a id="original" title="打开此分钟的原尺寸波形图"><img id="image" alt=""></a><p id="note" aria-live="polite"></p><small>灰底为采集缺口。极短事件额外画点以标明位置。<a href="reviewed-event.png" id="detail">查看已圈选疑点的局部放大图</a></small>
+</main><script src="pages.js"></script><script>
+const m=window.preview, rows=m.windows, el=id=>document.getElementById(id), time=s=>new Date(Math.round(s)*1000).toISOString().slice(11,19);
+let current=1;
+function move(direction){let i=current+direction;while(i>=1&&i<=rows.length&&el('skip').checked&&!rows[i-1].covered_samples)i+=direction;return i>=1&&i<=rows.length?i:null;}
+function show(value){current=Math.max(1,Math.min(rows.length,value));const r=rows[current-1],start=time(r.start_s),end=time(r.end_s);el('select').value=current;
+el('image').src=r.image;el('image').alt=start+' 至 '+end+' 的三通道波形';el('original').href=r.image;
+el('note').textContent='第 '+current+' 页 · '+start+' 至 '+end+' · 有波形 '+Number((r.covered_samples/m.fs).toFixed(3))+' 秒'+(m.ai_pages.includes(current)?' · 本页含 AI 圈选':'');
+el('prev').disabled=move(-1)===null;el('next').disabled=move(1)===null;}
+function go(i){if(i!==null)location.hash='minute-'+i;}
+function fromHash(){const p=/^#minute-(\d+)$/.exec(location.hash);show(p?Number(p[1]):1);}
+el('summary').textContent=m.record+' · '+rows.length+' 页 · 按首个采样点起算 · 键盘左右键可翻页';
+for(const r of rows){el('select').add(new Option(r.page+' · '+time(r.start_s)+'–'+time(r.end_s)+(r.covered_samples?'':' · 无数据')+(m.ai_pages.includes(r.page)?' · AI 圈选':''),r.page));}
+el('prev').onclick=()=>go(move(-1));el('next').onclick=()=>go(move(1));el('skip').onchange=()=>show(current);
+el('select').onchange=()=>go(+el('select').value);el('ai').disabled=!m.ai_pages.length;el('ai').onclick=()=>go(m.ai_pages.find(p=>p>current)||m.ai_pages[0]);
+el('detail').hidden=!m.ai_pages.length;window.onhashchange=fromHash;document.addEventListener('keydown',e=>{if(['SELECT','INPUT'].includes(e.target.tagName)||e.altKey||e.metaKey||e.ctrlKey)return;if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();go(move(e.key==='ArrowLeft'?-1:1));}});fromHash();
+</script></html>

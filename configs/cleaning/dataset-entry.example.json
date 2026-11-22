@@ -1,0 +1,21 @@
+{
+  "dataset": {
+    "format": "vital",
+    "path": "../../../bp2rr_new/dataset/Vital/PulseDB_Vital",
+    "inventory": "../../../bp2rr_new/preprocess/data/v1_20260920/inventory.json"
+  },
+  "config": {
+    "method": "dataset_rules",
+    "tasks": ["ECG", "PPG", "ABP"],
+    "purpose": "保留实测波形，交付原生 RR、PPI 和逐拍压力及其用途状态",
+    "patients": 2,
+    "seed": 111101,
+    "inspection_preset": "balanced",
+    "routing": "reason",
+    "secondary_probe": false,
+    "joint_views": 8,
+    "write_views": 50,
+    "atlas": true,
+    "api_cap": 0
+  }
+}

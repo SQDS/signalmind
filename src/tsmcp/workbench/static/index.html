@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SignalMind · 信号处理工作台</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="#overview"><svg viewBox="0 0 36 36" aria-hidden="true"><rect width="36" height="36" rx="10" fill="#45d7c0"/><path d="M5 19h6l3-8 5 16 4-10 3 2h5" fill="none" stroke="#102e37" stroke-width="2.5" stroke-linejoin="round"/></svg><span>SignalMind<small>信号处理工作台</small></span></a>
+  <div class="nav-label">工作空间</div>
+  <nav aria-label="主导航">
+    <a href="#overview" data-page="overview"><span>◫</span>运行总览</a>
+    <a href="#datasets" data-page="datasets"><span>⊞</span>数据与新任务</a>
+    <a href="#process" data-page="process"><span>⌘</span>Agent 处理过程</a>
+    <a href="#signals" data-page="signals"><span>∿</span>波形检查</a>
+    <a href="#archive" data-page="archive"><span>▤</span>方案与交付档案</a>
+  </nav>
+  <div class="sidebar-footer"><i class="status-dot"></i> 本地运行 <p>原始观测 · 处理版本 · 证据留存</p></div>
+</aside>
+<div class="workspace">
+  <header class="topbar"><div><div class="eyebrow">SIGNAL PROCESSING WORKBENCH</div><h1 id="page-title">运行总览</h1></div><div class="run-picker"><label for="run-select">当前运行</label><select id="run-select" aria-label="当前运行"></select></div></header>
+  <main id="content" aria-live="polite"><div class="empty">正在读取运行档案…</div></main>
+  <footer class="page-footer">SignalMind · 工程完成、策略接受与参考验证分别记录</footer>
+</div>
+<div id="toast" role="status" hidden></div>
+<dialog id="record-dialog"><div class="section-head"><h2 id="dialog-title">记录详情</h2><button id="dialog-close" class="quiet" aria-label="关闭">✕</button></div><div id="dialog-body"></div></dialog>
+<script type="module" src="/app.js"></script>
+</body></html>

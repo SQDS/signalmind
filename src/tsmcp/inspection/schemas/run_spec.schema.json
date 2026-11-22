@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signalmind:contract:run_spec:1.0.0",
+  "title": "run_spec",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "run_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "mode": {
+      "enum": [
+        "inspect_only",
+        "inspect_and_repair"
+      ]
+    },
+    "barrier_scope": {
+      "const": "run"
+    },
+    "source_blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SourceBlock"
+      },
+      "minItems": 1
+    },
+    "acceptance_spec_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "acceptance_spec_version": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+    },
+    "registry_snapshot_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "inspection_profile_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "inspection_profile_version": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+    },
+    "inspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "window_seconds": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "stride_policy_id": {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        "sensitivity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "audit_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "window_seconds",
+        "stride_policy_id",
+        "sensitivity",
+        "audit_fraction"
+      ]
+    },
+    "repair_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts_per_candidate": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "allow_imputation": {
+          "type": "boolean"
+        },
+        "allowed_tool_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "preserve_sampling_rate": {
+          "const": true
+        },
+        "preserve_time_axis": {
+          "const": true
+        },
+        "preserve_length": {
+          "const": true
+        },
+        "preserve_units": {
+          "const": true
+        }
+      },
+      "required": [
+        "max_attempts_per_candidate",
+        "allow_imputation",
+        "allowed_tool_ids",
+        "preserve_sampling_rate",
+        "preserve_time_axis",
+        "preserve_length",
+        "preserve_units"
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_model_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_wall_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_parallel_jobs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "max_model_tokens",
+        "max_wall_seconds",
+        "max_parallel_jobs"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "mode",
+    "barrier_scope",
+    "source_blocks",
+    "acceptance_spec_id",
+    "acceptance_spec_version",
+    "registry_snapshot_id",
+    "inspection_profile_id",
+    "inspection_profile_version",
+    "inspection",
+    "repair_policy",
+    "budget"
+  ],
+  "description": "Immutable run contract; every business tool call must bind this run_id.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "inspect_only"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "repair_policy": {
+            "properties": {
+              "max_attempts_per_candidate": {
+                "const": 0
+              },
+              "allow_imputation": {
+                "const": false
+              },
+              "allowed_tool_ids": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

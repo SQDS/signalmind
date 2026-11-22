@@ -1,0 +1,14 @@
+schema_version: 1
+task:
+  task_id: vital_waveform_cleaning
+  mode: development
+  purpose: ECG原生心搏与RR、PPG原生脉搏与PPI、ABP逐拍压力；保留时间轴和原始信息
+taskpacks:
+  - task_id: ecg_waveform_for_rr
+    enabled: true
+  - task_id: ppg_waveform_for_pulse
+    enabled: true
+  - task_id: abp_waveform_for_pressure
+    enabled: true
+# 模型和总费用上限由 run --model / --api-cap 显式指定。
+# 本轮无人工参考，参考依赖的准确率和质量门槛不在本配置中伪造。

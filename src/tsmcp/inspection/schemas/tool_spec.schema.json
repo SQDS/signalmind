@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signalmind:contract:tool_spec:1.0.0",
+  "title": "tool_spec",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "tool_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "tool_version": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+    },
+    "capability": {
+      "enum": [
+        "quality_assessment",
+        "event_detection",
+        "signal_processing",
+        "visualization"
+      ]
+    },
+    "runtime": {
+      "enum": [
+        "python",
+        "matlab"
+      ]
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "source_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dependency_lock_digest": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+    },
+    "parameter_schema_uri": {
+      "type": "string",
+      "format": "uri"
+    },
+    "output_schema_uri": {
+      "type": "string",
+      "format": "uri"
+    },
+    "preconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "modalities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "ECG",
+              "PPG",
+              "ABP",
+              "RESP",
+              "EDA",
+              "EMG",
+              "EEG",
+              "GENERIC"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "species_profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "fs_hz": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "enum": [
+                "any",
+                "exact_set",
+                "range"
+              ]
+            },
+            "allowed": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "minItems": 0,
+              "uniqueItems": true
+            },
+            "minimum": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maximum": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "native_only": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "mode",
+            "allowed",
+            "minimum",
+            "maximum",
+            "native_only"
+          ]
+        },
+        "min_contiguous_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "min_beats": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "halo_before_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "halo_after_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "required_clock_relation": {
+          "enum": [
+            "single_channel",
+            "same_or_verified"
+          ]
+        }
+      },
+      "required": [
+        "modalities",
+        "species_profiles",
+        "units",
+        "fs_hz",
+        "min_contiguous_seconds",
+        "min_beats",
+        "halo_before_seconds",
+        "halo_after_seconds",
+        "required_clock_relation"
+      ]
+    },
+    "effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "changes_waveform": {
+          "type": "boolean"
+        },
+        "changes_mask": {
+          "type": "boolean"
+        },
+        "changes_time_axis": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "changes_waveform",
+        "changes_mask",
+        "changes_time_axis"
+      ]
+    },
+    "deterministic": {
+      "type": "boolean"
+    },
+    "seed_required": {
+      "type": "boolean"
+    },
+    "timeout_seconds": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "candidate",
+            "validated",
+            "disabled"
+          ]
+        },
+        "suite_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "report_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "suite_id",
+        "report_id"
+      ]
+    },
+    "known_limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool_id",
+    "tool_version",
+    "capability",
+    "runtime",
+    "source_url",
+    "source_revision",
+    "dependency_lock_digest",
+    "parameter_schema_uri",
+    "output_schema_uri",
+    "preconditions",
+    "effects",
+    "deterministic",
+    "seed_required",
+    "timeout_seconds",
+    "validation",
+    "known_limitations"
+  ],
+  "description": "Algorithm registry contract; entries do not each become a separate MCP tool."
+}

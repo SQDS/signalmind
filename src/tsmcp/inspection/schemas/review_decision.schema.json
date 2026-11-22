@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signalmind:contract:review_decision:1.0.0",
+  "title": "review_decision",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "review_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "run_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "patch_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "source_version_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "parent_version_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "candidate_version_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "patch_digest": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+    },
+    "candidate_digest": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+    },
+    "acceptance_spec_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "acceptance_spec_version": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+    },
+    "reviewer_policy_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "reviewer_policy_version": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+    },
+    "verdict": {
+      "enum": [
+        "accepted",
+        "rejected",
+        "unresolved"
+      ]
+    },
+    "mandatory_checks_pass": {
+      "type": "boolean"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/CheckResult"
+      },
+      "minItems": 1
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "review_id",
+    "run_id",
+    "patch_id",
+    "source_version_id",
+    "parent_version_id",
+    "candidate_version_id",
+    "patch_digest",
+    "candidate_digest",
+    "acceptance_spec_id",
+    "acceptance_spec_version",
+    "reviewer_policy_id",
+    "reviewer_policy_version",
+    "verdict",
+    "mandatory_checks_pass",
+    "checks",
+    "reason_codes",
+    "evidence_ids"
+  ],
+  "description": "Independent review bound to the exact candidate, acceptance spec and run.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "accepted"
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "mandatory_checks_pass": {
+            "const": true
+          }
+        }
+      }
+    }
+  ]
+}

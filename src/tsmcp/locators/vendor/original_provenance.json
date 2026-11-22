@@ -1,0 +1,7 @@
+{
+  "attachment_sha256": "655f05e0c2c31c95c137e0df6fb83a174e22b7a83cb4d8b6f85ce5745b594624",
+  "python_block_sha256": "bbc81b7c16527076cbcdfee1c8f1323522664f9c82517634fb40e6c2573560ea",
+  "source": "user attachment, first Python fenced block",
+  "modifications": [],
+  "note": "The __main__ demo is retained but never used as benchmark data."
+}

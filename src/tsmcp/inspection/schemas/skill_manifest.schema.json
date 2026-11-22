@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signalmind:contract:skill_manifest:1.0.0",
+  "title": "skill_manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "skill_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "skill_version": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+    },
+    "lifecycle": {
+      "enum": [
+        "candidate",
+        "validated",
+        "active",
+        "retired"
+      ]
+    },
+    "role": {
+      "enum": [
+        "inspection",
+        "repair",
+        "review",
+        "research"
+      ]
+    },
+    "memory_namespace": {
+      "enum": [
+        "inspection",
+        "repair",
+        "review",
+        "research"
+      ]
+    },
+    "applicable_modalities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "ECG",
+          "PPG",
+          "ABP",
+          "RESP",
+          "EDA",
+          "EMG",
+          "EEG",
+          "GENERIC"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "workflow_ref": {
+      "type": "string",
+      "format": "uri"
+    },
+    "content_digest": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Digest"
+    },
+    "tool_dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/ToolDependency"
+      },
+      "minItems": 0
+    },
+    "validation_suite_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "validation_report_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "supersedes_version": {
+      "anyOf": [
+        {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "may_change_acceptance_spec": {
+      "const": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "skill_id",
+    "skill_version",
+    "lifecycle",
+    "role",
+    "memory_namespace",
+    "applicable_modalities",
+    "workflow_ref",
+    "content_digest",
+    "tool_dependencies",
+    "validation_suite_id",
+    "validation_report_id",
+    "source_refs",
+    "supersedes_version",
+    "may_change_acceptance_spec"
+  ],
+  "description": "Versioned procedural skill. Activation does not modify an in-flight acceptance contract.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "lifecycle": {
+            "enum": [
+              "validated",
+              "active"
+            ]
+          }
+        },
+        "required": [
+          "lifecycle"
+        ]
+      },
+      "then": {
+        "properties": {
+          "validation_suite_id": {
+            "type": "string"
+          },
+          "validation_report_id": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

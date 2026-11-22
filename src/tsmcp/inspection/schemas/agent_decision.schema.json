@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signalmind:contract:agent_decision:1.0.0",
+  "title": "agent_decision",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "decision_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "run_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "source_version_id": {
+      "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+    },
+    "agent_role": {
+      "enum": [
+        "coordinator",
+        "inspection",
+        "repair",
+        "review",
+        "research"
+      ]
+    },
+    "action": {
+      "enum": [
+        "get_evidence",
+        "run_tool",
+        "process_signal",
+        "submit_review",
+        "commit_patch",
+        "request_research",
+        "stop"
+      ]
+    },
+    "candidate_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "patch_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "review_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tool_call": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+            },
+            "source_version_id": {
+              "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+            },
+            "tool_id": {
+              "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+            },
+            "tool_version": {
+              "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/SemanticVersion"
+            },
+            "ranges": {
+              "type": "array",
+              "items": {
+                "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/IntervalRef"
+              },
+              "minItems": 0
+            },
+            "parameters": {
+              "type": "array",
+              "items": {
+                "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Parameter"
+              },
+              "minItems": 0
+            }
+          },
+          "required": [
+            "run_id",
+            "source_version_id",
+            "tool_id",
+            "tool_version",
+            "ranges",
+            "parameters"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:signalmind:contract:common:1.0.0#/$defs/Identifier"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "uncertainty": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "unknown"
+      ]
+    },
+    "rationale_summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "schema_version",
+    "decision_id",
+    "run_id",
+    "source_version_id",
+    "agent_role",
+    "action",
+    "candidate_id",
+    "patch_id",
+    "review_id",
+    "tool_call",
+    "evidence_ids",
+    "uncertainty",
+    "rationale_summary"
+  ],
+  "description": "Structured next-step proposal, not proof that the caller has the declared role.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "commit_patch"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "agent_role": {
+            "const": "coordinator"
+          },
+          "patch_id": {
+            "type": "string"
+          },
+          "review_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "enum": [
+              "run_tool",
+              "process_signal"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "tool_call": {
+            "not": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
