@@ -35,7 +35,7 @@ def freeze_implementation(workspace):
     package = Path(__file__).resolve().parents[1]
     files = {}
     for path in package.rglob("*"):
-        if path.is_file() and path.suffix in {".py", ".json"}:
+        if path.is_file() and path.suffix in {".py", ".json", ".yaml"}:
             relative = path.relative_to(package)
             destination = workspace / "private/frozen_source/tsmcp" / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -188,3 +188,30 @@ def restore_steps(root, trace_reference, values, valid, estimated, through):
         if array_hash(values, valid, estimated) != step["after_hash"]:
             raise ValueError("Operator output dependency differs")
     return values, valid, estimated
+
+
+def dataset_telemetry(manifest, events, returned, wall_s, summary):
+    import resource
+
+    durations = sum(c["n"] / c["fs"] for c in manifest["cases"])
+    total = resource.getrusage(resource.RUSAGE_SELF)
+    children = resource.getrusage(resource.RUSAGE_CHILDREN)
+    meters = [e.get("usage", {}) for e in returned.values()]
+    return dict(
+        channel_hours=durations / 3600,
+        wall_seconds_this_invocation=wall_s,
+        wall_s_per_signal_hour=wall_s / (durations / 3600) if durations else None,
+        process_cpu_s=total.ru_utime + total.ru_stime,
+        children_cpu_s=children.ru_utime + children.ru_stime,
+        max_rss_kib=total.ru_maxrss,
+        gpu_used_by_local_operators=False,
+        model_calls=len(returned),
+        input_tokens=sum(u.get("input_tokens", 0) for u in meters),
+        output_tokens=sum(u.get("output_tokens", 0) for u in meters),
+        provider_image_tokens=None,
+        provider_token_note="Provider does not separately meter vision tokens in this ledger",
+        retries=sum(e.get("attempt", 0) > 0 for e in events if e["type"] == "model_call_started"),
+        pending_items=sum(len(r["unresolved"]) for r in summary["records"]),
+        reference_accuracy=None,
+        estimated_usd_per_signal_hour=summary["estimated_ds_usd"] / (durations / 3600) if durations else None,
+    )

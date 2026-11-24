@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-import operator
 import time
 from collections import Counter, defaultdict
 from functools import lru_cache
@@ -14,7 +13,10 @@ import numpy as np
 
 from tsmcp.processing import ProcessingSession, intervals
 
+from . import ledger
 from .common import array_hash, changed, digest, implementation_hash, read, sha, write
+from .context import ContextBuilder
+from .contracts import Diagnosis, Patch, RepairPlan, ReviewReceipt, Run, Tool, outcome
 from .dataset_evidence import (
     acquisition,
     change_ranges,
@@ -27,16 +29,12 @@ from .dataset_evidence import (
     patient_profiles,
     view,
 )
-from .dataset_review import FIELDS, QUALITIES, Reviewer
+from .dataset_review import FIELDS, QUALITIES, Reviewer, applies
 from .engine import aggregate, evaluate_output, load_arrays
+from .knowledge import Knowledge
 from .provenance import check_stop, emit
+from .quality_gate import ACCEPTANCE, SPEC_ID, registered_parameters, spike_check, waveform_gate
 from .tasks import probe
-
-OPS = {"lt": operator.lt, "le": operator.le, "gt": operator.gt, "ge": operator.ge}
-
-
-def applies(conditions, features):
-    return all(features[c["field"]] is not None and OPS[c["op"]](features[c["field"]], c["value"]) for c in conditions)
 
 
 def csv_table(path, rows, fields):
@@ -63,6 +61,19 @@ class Record:
         self.unresolved = []
         self.pending_ranges = defaultdict(list)
         self.spent_gate_views = 0
+        self.revision = digest(
+            ["coarse", self.implementation, sorted((k, a["content_hash"]) for k, a in self.raw.items())]
+        )
+        self.context = ContextBuilder(config)
+        self.round = 1
+        self.blocked = False
+        self.set_stage = None
+        self.prepared_ok = True
+
+    def phase(self, name):
+        if self.set_stage:
+            self.set_stage(name)
+            emit(self.root, "quality_phase", stage=name, record=self.rid, revision=self.revision)
 
     def loader(self, arts):
         @lru_cache(maxsize=12)
@@ -83,45 +94,114 @@ class Record:
     def case_span(self, cid, a, b, data):
         return hit_location(dict(case=cid, a=a, b=b), self.cases, data)
 
-    def isolated_spikes(self, parents):
+    def plan(self, cid, parent, target, ranges, operations, hit=None):
+        case = self.cases[cid]
+        diagnosis = (hit or {}).get("diagnosis")
+        if hit and hit.get("wave_requested") == "interpolate_spike" and hit.get("trial_diagnosis"):
+            diagnosis = hit["trial_diagnosis"]
+        diagnosis = diagnosis or dict(label="unknown", evidence_refs=[parent["content_hash"]])
+        protected = []
+        if any(op["op"] in ("interpolate", "repair") for op in operations):
+            meta = read(self.root / parent["probe_path"])
+            bounds = meta["detector_support"]
+            restricted = [
+                pair
+                for k in ("unsupported_ranges", "boundary_uncertain_ranges", "empty_event_ranges")
+                for pair in bounds[k]
+            ]
+            if case["task"] == "ECG":
+                m = round(0.08 * case["fs"])
+                restricted.extend(
+                    (max(0, z["sample"] - m), min(case["n"], z["sample"] + m + 1)) for z in meta["events"]
+                )
+            protected = [
+                ledger.region(cid, lo, hi) for lo, hi in restricted if any(a < hi and lo < b for a, b in ranges)
+            ]
+        plan = RepairPlan(
+            candidate_id=target,
+            candidate_revision=self.revision,
+            parent_version_id=parent["artifact_id"],
+            diagnosis=Diagnosis.model_validate(diagnosis),
+            tool=Tool(
+                tool_id=operations[0]["op"] if len(operations) == 1 else "registered_recipe",
+                tool_version=self.implementation,
+                parameters={"operations": operations},
+            ),
+            read_ranges=[ledger.region(cid, 0, case["n"])],
+            write_ranges=[ledger.region(cid, a, b) for a, b in ranges],
+            protected_ranges=protected,
+            expected_effects=[op["op"] for op in operations],
+            acceptance_spec_id=SPEC_ID,
+            stop_conditions=["unsupported", "protected_physiology", "scope_violation", "failed_retest"],
+        )
+        write(self.path / "plans" / (plan.plan_id + ".json"), plan.model_dump(mode="json"))
+        return plan
+
+    def publish(self, plan, parent, candidate, check, evidence, action):
+        self.phase("patch_committing")
+        receipt = ReviewReceipt(
+            candidate_id=plan.candidate_id,
+            candidate_revision=self.revision,
+            parent_version_id=parent["artifact_id"],
+            candidate_version_id=candidate["artifact_id"],
+            plan_id=plan.plan_id,
+            acceptance_spec_id=SPEC_ID,
+            hard_gate=check,
+            review_decision=action,
+            evidence_refs=evidence,
+            reviewer_version=self.implementation,
+        )
+        patch = Patch(
+            plan=plan,
+            receipt=receipt,
+            candidate_version_id=candidate["artifact_id"],
+            idempotency_key=digest([plan.plan_id, candidate["artifact_id"]]),
+        )
+        ledger.commit_patch(self.path, patch, parent["artifact_id"])
+
+    def isolated_spikes(self, parents, alerts=()):
         """Recover individual bounded excursions from a coarse recipe that was declined for the whole block."""
         current = self.loader(parents)
         original = self.loader(self.raw)
         hits = []
+        cores = defaultdict(set)
+        for h in alerts:
+            if h["reason"] in ("biphasic_core", "impulsive_core") and h["b"] - h["a"] <= 4:
+                cores[h["case"]].add((h["a"], h["b"]))
         for cid, c in self.cases.items():
             for op in self.bank["fixed_dsp"][cid]["operations"]:
-                if op.get("parameters", {}).get("source") != "public_discontinuous_excursion_rule":
+                if op.get("parameters", {}).get("source") == "public_discontinuous_excursion_rule":
+                    cores[cid].update((a, b) for a, b in op["ranges_samples"])
+            if not cores[cid]:
+                continue
+            _, x, v, e, pr = current(cid)
+            raw = original(cid)[1]
+            for a, b in sorted(cores[cid]):
+                if a < 4 or b + 4 > len(x) or b - a > min(4, 5 * c["fs"]):
                     continue
-                _, x, v, e, pr = current(cid)
-                raw = original(cid)[1]
-                peaks = [r["sample"] for r in pr["events"]]
-                peaks.extend(r["start_sample"] for r in pr["pressures"])
-                if pr["pressures"]:
-                    peaks.append(pr["pressures"][-1]["stop_sample"])
-                peaks = np.asarray(peaks)
-                margin = round(0.08 * c["fs"])
-                for a, b in op["ranges_samples"]:
-                    # The frozen excursion detector uses four quiet anchor samples on either side.
-                    if a < 4 or b + 4 > len(x) or b - a > min(4, 5 * c["fs"]):
-                        continue
-                    win = slice(a - 4, b + 4)
-                    if not (v[win] & ~e[win]).all() or not np.array_equal(raw[win], x[win]):
-                        continue
-                    if ((peaks >= a - margin) & (peaks < b + margin)).any():
-                        continue
-                    reason = "isolated_spike_candidate"
-                    hits.append(
-                        dict(
-                            id=digest([cid, a, b, reason])[:24],
-                            case=cid,
-                            task=c["task"],
-                            a=a,
-                            b=b,
-                            reason=reason,
-                            value=float(np.ptp(x[a - 1 : b + 1])),
-                            anchor_values=[float(z) for z in (x[a - 1], x[a:b].min(), x[a:b].max(), x[b])],
-                        )
+                if not (v[a - 4 : b + 4] & ~e[a - 4 : b + 4]).all() or not np.array_equal(
+                    raw[a - 4 : b + 4], x[a - 4 : b + 4]
+                ):
+                    continue
+                check = spike_check(c, x, v, e, pr, a, b)
+                # Preserve the candidate and its reason even when numerical repair is inapplicable.
+                reason = "isolated_spike_candidate"
+                hits.append(
+                    dict(
+                        id=digest([cid, a, b, reason])[:24],
+                        case=cid,
+                        task=c["task"],
+                        a=a,
+                        b=b,
+                        reason=reason,
+                        support_status=check["status"]
+                        if check["status"] != "evaluated_no_alert"
+                        else "suspected_artifact",
+                        applicability=check,
+                        value=float(np.ptp(x[a - 1 : b + 1])),
+                        anchor_values=[float(z) for z in (x[a - 1], x[a:b].min(), x[a:b].max(), x[b])],
                     )
+                )
         return hits
 
     def spike_trials(self, parents, hits):
@@ -146,8 +226,27 @@ class Record:
                 status="ineligible",
             )
             log.append(rec)
-            if not (v[a - 1 : b + 1] & ~e[a - 1 : b + 1]).all():
-                rec["reason"] = "core_or_anchor_no_longer_observed"
+            old_pr = read(self.root / par["probe_path"])
+            pre = spike_check(c, x, v, e, old_pr, a, b)
+            op = dict(
+                op="interpolate",
+                ranges_samples=[[a, b]],
+                parameters={"max_transient_samples": min(4, int(5 * c["fs"]))},
+            )
+            plan = self.plan(cid, par, h["id"], [[a, b]], [op], h)
+            left, r = max(0, a - round(5 * c["fs"])), min(len(x), b + round(5 * c["fs"]))
+            if h.get("context_digest", array_hash(x[left:r], v[left:r], e[left:r])) != array_hash(
+                x[left:r], v[left:r], e[left:r]
+            ):
+                pre = {"status": "insufficient_support", "reason": "stale_parent_context"}
+            rec.update(plan_id=plan.plan_id, candidate_revision=self.revision, precheck=pre)
+            if pre["status"] != "evaluated_no_alert":
+                rec.update(
+                    reason=pre.get("reason", pre["status"]),
+                    hard_gate={"status": "rejected", "checks": {"support_and_morphology": False}},
+                )
+                if h["measurement"] == "keep":
+                    h["measurement"] = "review"
                 continue
             started = time.monotonic()
             session = ProcessingSession(
@@ -191,21 +290,27 @@ class Record:
                 and all(abs(i - j) <= 1 for i, j in zip(old, new, strict=True))
                 and after_step < before_step
             )
-            if not passed:
+            hard = waveform_gate(
+                c, (t, x, v, e, old_pr), (t, state.values, v, e | state.repaired, new_pr), state.operations, [[a, b]]
+            )
+            hard["checks"]["native_timing_and_step"] = bool(passed)
+            hard["status"] = "passed" if all(hard["checks"].values()) else "rejected"
+            rec["hard_gate"] = hard
+            if hard["status"] != "passed":
                 rec.update(status="rollback", reason="local_waveform_or_landmark_retest")
             elif self.spent_gate_views >= self.config["write_views"]:
                 rec.update(status="pending", reason="write_view_budget")
             else:
-                key = "spike-" + h["id"]
+                key = "spike-" + h["id"] + ("" if self.round == 1 else "-retry")
                 before = self.loader(accepted)
                 after = self.loader(accepted | {cid: candidate})
                 loc = self.case_span(cid, a, b, before)
-                loc["context_s"] = 0.45
+                loc.update(context_s=2.0, core_samples=[a, b], spike_retest=rec["retest"])
                 pic, metrics = self.picture(key, loc, before, after)
                 self.spent_gate_views += 1
                 rec["image"] = str(pic.relative_to(self.path))
-                d = self.reviewer.decide(
-                    "gate",
+                rec["review_evidence"] = metrics
+                d = self.review_writes(
                     [
                         dict(
                             id=key,
@@ -217,17 +322,33 @@ class Record:
                                 candidate=candidate["content_hash"],
                                 native=metrics,
                                 diagnostic=rec["retest"],
+                                spike_review_guide=(
+                                    "Assess the numerical samples against the measured anchors, the timed "
+                                    "landmarks and (if supported) the same-phase neighbours. These are observational "
+                                    "comparisons. A displaced or removed physiological feature is distinct "
+                                    "from omission of an interval across estimated support in the release table. "
+                                    "Cite the local timing or morphology behind your decision."
+                                ),
+                                revision=self.revision,
+                                plan_id=plan.plan_id,
+                                acceptance_spec=SPEC_ID,
                             ),
                         )
                     ],
+                    before,
+                    after,
+                    {key: loc},
                 ).get(key)
                 if d:
                     rec.update(
-                        status="accepted" if d["decision"] == "accept" else "rollback",
+                        status={"accept": "accepted", "rollback": "rollback", "need_evidence": "pending"}[
+                            d["decision"]
+                        ],
                         reason=d["reason"],
                         receipt=d["receipt"],
                     )
                     if d["decision"] == "accept":
+                        self.publish(plan, par, candidate, hard, [d["receipt"]], "accept")
                         accepted[cid] = candidate
                 else:
                     rec.update(status="pending", reason="write_review_unavailable")
@@ -235,20 +356,73 @@ class Record:
                 self.unresolved.append(dict(stage="spike_trial", case=cid, hit=h["id"], reason=rec["reason"]))
             if rec["status"] != "accepted" and h["measurement"] == "keep":
                 h["measurement"] = "review"
-        write(self.path / "spike-trials.json", log)
+        write(self.path / ("spike-trials.json" if self.round == 1 else "spike-trials-rescan.json"), log)
         return accepted
 
-    def gate(self, label, parents, candidates):
+    def review_writes(self, rows, before, after, locations):
+        decisions = self.reviewer.decide("gate", rows)
+        for row in rows:
+            key = row["id"]
+            first = decisions.get(key)
+            if not first or first["decision"] != "need_evidence":
+                continue
+            if self.spent_gate_views >= self.config["write_views"]:
+                continue
+            loc = dict(locations[key], context_s=10)
+            pic, metrics = self.picture(key + "-expanded", loc, before, after)
+            self.spent_gate_views += 1
+            second = self.reviewer.decide(
+                "gate",
+                [
+                    dict(
+                        id=key,
+                        images=[pic],
+                        data=dict(row["data"], native=metrics, prior_review=first["receipt"], request=first["reason"]),
+                    )
+                ],
+            ).get(key)
+            if second:
+                decisions[key] = dict(second, prior_receipt=first["receipt"])
+        return decisions
+
+    def gate(self, label, parents, candidates, authorized_plans=None):
         before = self.loader(parents)
         after = self.loader(candidates)
         rows = []
         needed = defaultdict(list)
         result = parents.copy()
         log = {}
+        gates = {}
+        locations = {}
+        plans = {}
         for cid in self.cases:
             if parents[cid]["content_hash"] == candidates[cid]["content_hash"]:
                 continue
             check_stop(self.root)
+            ops = candidates[cid]["operations"]
+            authorized = [(a, b) for op in ops for a, b in op["ranges_samples"]]
+            plan = (
+                authorized_plans[cid]
+                if authorized_plans is not None
+                else self.plan(cid, parents[cid], label + "-" + cid, authorized, ops)
+            )
+            if plan.parent_version_id != parents[cid]["artifact_id"] or plan.candidate_revision != self.revision:
+                raise ValueError("Write approval is bound to another parent or candidate revision")
+            authorized = [(z.start_sample, z.end_sample) for z in plan.write_ranges]
+            hard = waveform_gate(self.cases[cid], before(cid), after(cid), ops, authorized)
+            plans[cid] = plan
+            gates[cid] = hard
+            if hard["status"] != "passed":
+                log[cid] = dict(
+                    accepted=False,
+                    plan_id=plan.plan_id,
+                    hard_gate=hard,
+                    ranges={},
+                    parent_hash=parents[cid]["content_hash"],
+                    candidate_hash=candidates[cid]["content_hash"],
+                )
+                self.pending_ranges[cid].extend(change_ranges(before(cid), after(cid)))
+                continue
             width = max(1, round(10 * self.cases[cid]["fs"]))
             tiles = []
             for lo, hi in change_ranges(before(cid), after(cid)):
@@ -265,6 +439,7 @@ class Record:
                 if self.spent_gate_views >= self.config["write_views"]:
                     continue
                 loc = self.case_span(cid, a, b, before)
+                locations[key] = loc
                 image, metrics = self.picture(key, loc, before, after)
                 rows.append(
                     dict(
@@ -273,6 +448,10 @@ class Record:
                         data=dict(
                             task=self.cases[cid]["task"],
                             changed_ranges=spans,
+                            hard_gate=hard,
+                            revision=self.revision,
+                            plan_id=plan.plan_id,
+                            acceptance_spec=SPEC_ID,
                             changed_seconds_relative_to_view=[
                                 [(l0 - a) / self.cases[cid]["fs"], (r0 - a) / self.cases[cid]["fs"]] for l0, r0 in spans
                             ],
@@ -283,26 +462,50 @@ class Record:
                     )
                 )
                 self.spent_gate_views += 1
-        decisions = self.reviewer.decide("gate", rows)
+        self.phase("independent_review")
+        decisions = self.review_writes(rows, before, after, locations)
         for cid, keys in needed.items():
             accepted = all(decisions.get(k, {}).get("decision") == "accept" for k in keys)
             if accepted:
+                self.publish(
+                    plans[cid],
+                    parents[cid],
+                    candidates[cid],
+                    gates[cid],
+                    [decisions[k]["receipt"] for k in keys],
+                    "mark_unrecoverable" if label.startswith("fine-gate") else "accept",
+                )
                 result[cid] = candidates[cid]
-            if any(k not in decisions for k in keys):
+            if any(decisions.get(k, {}).get("decision") in (None, "need_evidence") for k in keys):
                 self.pending_ranges[cid].extend(change_ranges(before(cid), after(cid)))
                 self.unresolved.append(dict(stage=label, case=cid, reason="write_review_pending"))
             log[cid] = dict(
                 parent_hash=parents[cid]["content_hash"],
                 candidate_hash=candidates[cid]["content_hash"],
                 accepted=accepted,
+                plan_id=plans[cid].plan_id,
+                hard_gate=gates[cid],
                 ranges={k: decisions.get(k, {"decision": "pending"}) for k in keys},
             )
         write(self.path / (label + ".json"), log)
         return result
 
     def coarse(self):
+        self.phase("coarse_planning")
         if not self.reviewer.enabled:
-            return {cid: self.bank["rule_adaptive_dsp"][cid] for cid in self.cases}
+            chosen = self.raw.copy()
+            records = {}
+            before = self.loader(self.raw)
+            after = self.loader(self.bank["rule_adaptive_dsp"])
+            for cid, c in self.cases.items():
+                art = self.bank["rule_adaptive_dsp"][cid]
+                if art["content_hash"] != self.raw[cid]["content_hash"]:
+                    hard = waveform_gate(c, before(cid), after(cid), art["operations"])
+                    records[cid] = {"hard_gate": hard, "review": "not_applicable_local_baseline"}
+                    if hard["status"] == "passed":
+                        chosen[cid] = art
+            write(self.path / "local-dsp-checks.json", records)
+            return chosen
         before = self.loader(self.raw)
         by_type = defaultdict(list)
         protected = []
@@ -390,7 +593,9 @@ class Record:
 
     def groups(self, hits, data):
         by = defaultdict(list)
-        scores = jev_routes(self.root, self.config, hits) if self.config["routing"] == "jev" else {}
+        scores = (
+            jev_routes(self.root, self.config, hits) if self.config["routing"] == "jev" and not self.blocked else {}
+        )
         for h in hits:
             score = scores.get(h["id"])
             h["jev_score"] = score
@@ -401,7 +606,7 @@ class Record:
         requests = []
         rosters = []
         for (task, reason, route), members in sorted(by.items()):
-            gid = f"{self.rid}-{task}-{reason}-{route}"
+            gid = f"{self.rid}-{task}-{reason}-{route}" + ("" if self.round == 1 else "-rescan")
             for h in members:
                 h["group"] = gid
             values = np.array(
@@ -422,10 +627,22 @@ class Record:
                 typical,
                 max((j for j in range(len(members)) if j != typical), key=distance.__getitem__, default=typical),
             ]
+            roles = ["typical", "detail" if len(members) == 1 else "boundary"]
+            candidate_group = reason == "isolated_spike_candidate"
+            eligibility = np.array([h.get("applicability", {}).get("status") == "evaluated_no_alert" for h in members])
+            if candidate_group and eligibility.any() and not eligibility.all():
+                reps = []
+                for mask in (eligibility, ~eligibility):
+                    ids = np.flatnonzero(mask)
+                    deviations = np.abs(values[ids] - np.median(values[ids], axis=0)).mean(axis=1)
+                    reps.append(int(ids[deviations.argmin()]))
+                roles = ["trial_eligible", "protected_comparison"]
             examples = [members[j] for j in reps]
             images = []
             for i, h in enumerate(examples):
                 loc = hit_location(h, self.cases, data)
+                if self.round > 1:
+                    loc["context_s"] = 10
                 if reason == "isolated_spike_candidate":
                     loc["show_detail"] = True
                 if i == 1 and len(members) == 1:
@@ -439,7 +656,9 @@ class Record:
             case_index = {cid: j for j, cid in enumerate(case_ids)}
             columns = ["case_index", "a", "b", "trigger_value", *FIELDS, "ECG_bpm", "PPG_bpm", "ABP_bpm", "jev_score"]
             if reason == "isolated_spike_candidate":
-                columns.extend(["left_anchor", "core_min", "core_max", "right_anchor"])
+                columns.extend(
+                    ["left_anchor", "core_min", "core_max", "right_anchor", "trial_eligible", "precheck_status"]
+                )
             table = [
                 [
                     case_index[h["case"]],
@@ -450,8 +669,13 @@ class Record:
                     *[h["peer_bpm"].get(k) for k in ("ECG", "PPG", "ABP")],
                     h["jev_score"],
                     *h.get("anchor_values", []),
+                    *(
+                        [int(eligibility[i]), h.get("applicability", {}).get("status", "insufficient_support")]
+                        if candidate_group
+                        else []
+                    ),
                 ]
-                for h in members
+                for i, h in enumerate(members)
             ]
             requests.append(
                 dict(
@@ -459,7 +683,10 @@ class Record:
                     images=images,
                     data=dict(
                         task=task,
+                        revision=self.revision,
+                        acceptance_spec=SPEC_ID,
                         trigger=reason,
+                        evidence_ids=["view_1", "view_2", "members"],
                         route=route,
                         scope=len(members),
                         summary=stats,
@@ -468,9 +695,10 @@ class Record:
                             dict(id=cid, fs=self.cases[cid]["fs"], unit=self.cases[cid]["unit"]) for cid in case_ids
                         ],
                         columns=columns,
+                        feedback=[h["feedback"] for h in examples if h.get("feedback")],
                         member_rows=table,
                         image_rows=reps,
-                        image_roles=["typical", "detail" if len(members) == 1 else "boundary"],
+                        image_roles=roles,
                         purpose=self.config["purpose"],
                     ),
                 )
@@ -478,11 +706,30 @@ class Record:
             if reason == "isolated_spike_candidate":
                 evidence = requests[-1]["data"]
                 evidence["core_samples_by_member"] = [data(h["case"])[1][h["a"] : h["b"]].tolist() for h in members]
+                evidence["trial_scope"] = dict(
+                    eligible=int(eligibility.sum()),
+                    protected=int((~eligibility).sum()),
+                    image_eligible=[bool(eligibility[i]) for i in reps],
+                    interpretation="Eligibility only permits a reversible trial; it does not diagnose an artifact.",
+                )
+                if eligibility.any() and not eligibility.all():
+                    evidence["trial_scope"]["instruction"] = (
+                        "View 1 represents eligible cores; view 2 represents protected members. "
+                        "Give both a full-group diagnosis and trial_diagnosis for eligible members, "
+                        "citing the matching view and measurements."
+                    )
                 evidence["plot_key"] = (
                     "Both columns show observations. Left: beat context. Right: sampled points at the shaded core "
                     "and its immediate anchors. Compare the core shape against neighbouring beats. "
+                    "A near-constant core can be far from both anchors even when its internal span is small. "
                     "Null means unavailable; reason routing has no JEV score."
                 )
+            request = requests.pop()
+            pages = self.context.group_pages(request)
+            for row, start, stop in pages:
+                requests.append(row)
+                for h in members[start:stop]:
+                    h["policy_id"] = row["id"]
             rosters.append(
                 dict(
                     id=gid,
@@ -493,13 +740,19 @@ class Record:
                     examples=[h["id"] for h in examples],
                     member_ids=[h["id"] for h in members],
                     member_rows_sha256=digest(table),
+                    pages=[dict(id=r["id"], start=a, end=b) for r, a, b in pages],
                 )
             )
-        write(self.path / "groups.json", rosters)
-        plans = self.reviewer.decide("groups", requests)
-        write(self.path / "repair-plans.json", plans)
+        suffix = "" if self.round == 1 else "-rescan"
+        write(self.path / ("groups" + suffix + ".json"), rosters)
+        if not self.blocked:
+            self.phase("diagnosis_running")
+        plans = self.reviewer.decide("groups", requests) if not self.blocked else {}
+        if not self.blocked:
+            self.phase("repair_planning")
+        write(self.path / ("repair-plans" + suffix + ".json"), plans)
         for h in hits:
-            plan = plans.get(h["group"])
+            plan = plans.get(h["policy_id"])
             if plan is None:
                 h.update(
                     wave_requested="preserve",
@@ -507,12 +760,27 @@ class Record:
                     decision_source="unreviewed" if self.reviewer.enabled else "local_rule",
                 )
             else:
+                h["diagnosis"] = plan.get("diagnosis", dict(label="unknown", evidence_refs=[plan["receipt"]]))
                 f = h["features"]
+                h["parameters"] = plan.get("parameters", {})
                 h.update(
                     wave_requested=plan["wave"] if applies(plan["wave_if"], f) else "preserve",
                     measurement=plan["measure"] if applies(plan["measure_if"], f) else plan["otherwise"],
                     decision_source=plan["receipt"],
                 )
+                if h["reason"] == "isolated_spike_candidate" and h["wave_requested"] == "interpolate_spike":
+                    eligible = h.get("applicability", {}).get("status", "insufficient_support") == "evaluated_no_alert"
+                    h["trial_diagnosis"] = plan.get("trial_diagnosis", h["diagnosis"])
+                    if not eligible or h["trial_diagnosis"]["label"] != "artifact":
+                        h["wave_requested"] = "preserve"
+                uncertain = h.get("support_status") in ("failed", "pending", "insufficient_support") or plan.get(
+                    "diagnosis", {}
+                ).get("label") in ("mixed", "unknown")
+                if uncertain:
+                    if h["wave_requested"] not in ("mark_invalid", "interpolate_spike"):
+                        h["wave_requested"] = "preserve"
+                    if h["measurement"] == "keep":
+                        h["measurement"] = "review"
         if self.reviewer.enabled:
             self.unresolved.extend(
                 dict(stage="groups", group=r["id"], reason="unreviewed") for r in requests if r["id"] not in plans
@@ -521,7 +789,107 @@ class Record:
             self.unresolved.append(dict(stage="routing", reason="JEV quota exhausted"))
         return rosters
 
+    def filter_trials(self, parents, hits):
+        selected = parents.copy()
+        log = []
+        for h in hits:
+            op = h["wave_requested"]
+            if op not in ("remove_tone", "lowpass", "local_detrend"):
+                continue
+            cid, a, b = h["case"], h["a"], h["b"]
+            c = self.cases[cid]
+            par = selected[cid]
+            raw, t, x, v, e = load_arrays(self.root, c, par)
+            left, r = max(0, a - round(5 * c["fs"])), min(len(x), b + round(5 * c["fs"]))
+            rec = dict(hit=h["id"], case=cid, a=a, b=b, method=op, parent=par["artifact_id"])
+            log.append(rec)
+            params = registered_parameters(op, h["reason"], c, h.get("parameters", {}))
+            if (
+                params is None
+                or not (v[a:b] & ~e[a:b]).all()
+                or h["context_digest"] != array_hash(x[left:r], v[left:r], e[left:r])
+            ):
+                rec.update(status="ineligible", reason="unsupported_parameters_support_or_stale_parent")
+                h["measurement"] = "review"
+                continue
+            operation = dict(op=op, ranges_samples=[[a, b]], parameters=params)
+            plan = self.plan(cid, par, h["id"], [[a, b]], [operation], h)
+            key = "filter-" + h["id"] + "-" + str(self.round)
+            session = ProcessingSession(
+                x, fs=c["fs"], channel=c["task"], unit=c["unit"], source_id=par["content_hash"], missing=~v | e
+            )
+            started = time.monotonic()
+            try:
+                state = session.process(session.raw.id, op, [[a, b]], **params)
+            except ValueError as exc:
+                rec.update(status="ineligible", reason=str(exc), plan_id=plan.plan_id)
+                h["measurement"] = "review"
+                continue
+            candidate = evaluate_output(
+                self.root,
+                c,
+                {"hash": plan.plan_id},
+                self.implementation,
+                par,
+                raw,
+                t,
+                x,
+                state.values,
+                v,
+                e,
+                state.operations,
+                started,
+            )
+            before = self.loader(selected)
+            after = self.loader(selected | {cid: candidate})
+            hard = waveform_gate(c, before(cid), after(cid), state.operations, [[a, b]])
+            rec.update(plan_id=plan.plan_id, candidate=candidate["artifact_id"], hard_gate=hard)
+            if hard["status"] != "passed":
+                rec.update(status="rollback", reason="hard_gate")
+            elif self.spent_gate_views >= self.config["write_views"]:
+                rec.update(status="pending", reason="write_view_budget")
+            else:
+                loc = self.case_span(cid, a, b, before)
+                pic, metrics = self.picture(key, loc, before, after)
+                self.spent_gate_views += 1
+                d = self.review_writes(
+                    [
+                        dict(
+                            id=key,
+                            images=[pic],
+                            data=dict(
+                                task=c["task"],
+                                revision=self.revision,
+                                parent=par["content_hash"],
+                                candidate=candidate["content_hash"],
+                                plan_id=plan.plan_id,
+                                hard_gate=hard,
+                                native=metrics,
+                            ),
+                        )
+                    ],
+                    before,
+                    after,
+                    {key: loc},
+                ).get(key)
+                if d and d["decision"] == "accept":
+                    self.publish(plan, par, candidate, hard, [d["receipt"]], "accept")
+                    selected[cid] = candidate
+                    rec.update(status="accepted", reason=d["reason"], receipt=d["receipt"])
+                elif d and d["decision"] == "rollback":
+                    rec.update(status="rollback", reason=d["reason"], receipt=d["receipt"])
+                else:
+                    rec.update(status="pending", reason="need_evidence")
+            if rec["status"] != "accepted":
+                h["measurement"] = "review"
+            if rec["status"] == "pending":
+                self.unresolved.append(dict(stage="filter_trial", hit=h["id"], reason=rec["reason"]))
+        write(self.path / ("filter-trials.json" if self.round == 1 else "filter-trials-rescan.json"), log)
+        return selected
+
     def fine(self, parents, hits):
+        label = "fine-gate" if self.round == 1 else "fine-gate-rescan"
+        authorized_plans = {}
         after = parents.copy()
         requested = defaultdict(list)
         for h in hits:
@@ -539,6 +907,13 @@ class Record:
             rr = intervals(mask & v & ~e)
             if not rr:
                 continue
+            authorized_plans[cid] = self.plan(
+                cid,
+                par,
+                label + "-" + cid,
+                rr,
+                [dict(op="mark_invalid", ranges_samples=rr, parameters={"member_hits": [hid for _, _, hid in rows]})],
+            )
             session = ProcessingSession(
                 x, fs=c["fs"], channel=c["task"], unit=c["unit"], source_id=par["content_hash"], missing=~v | e
             )
@@ -559,59 +934,237 @@ class Record:
                 state.operations,
                 started,
             )
-        return self.gate("fine-gate", parents, after) if requested else parents.copy()
+        return self.gate(label, parents, after, authorized_plans) if requested else parents.copy()
 
-    def run(self):
+    def scan_version(self, versions):
+        data = self.loader(versions)
         cases = list(self.cases.values())
-        self.profile = patient_profiles(cases, self.loader(self.raw))
-        write(self.path / "patient_profile.json", self.profile)
-        baseline_hits = discover(
+        self.scan_coverage = {}
+        hits = discover(
             self.root,
             cases,
-            self.loader(self.raw),
+            data,
             self.profile,
             self.config["inspection_preset"],
             self.config.get("secondary_probe", False),
+            self.scan_coverage,
         )
-        parent = self.coarse()
-        data = self.loader(parent)
-        hits = (
-            discover(
-                self.root,
-                cases,
-                data,
-                self.profile,
-                self.config["inspection_preset"],
-                self.config.get("secondary_probe", False),
-            )
-            if any(parent[cid]["content_hash"] != self.raw[cid]["content_hash"] for cid in parent)
-            else baseline_hits
-        )
-        if self.reviewer.enabled:
+        if self.reviewer.enabled and not self.blocked:
+            protected = self.path / "coarse-protected.json"
             seen = set()
-            for z in read(self.path / "coarse-protected.json"):
-                cid = z["case"]
-                a, b = z["a"], z["b"]
+            for z in read(protected) if protected.exists() else []:
+                cid, a, b = z["case"], z["a"], z["b"]
                 if (cid, a, b) in seen:
                     continue
                 seen.add((cid, a, b))
-                hits.append(
-                    dict(
-                        id=digest([cid, a, b, "protected_landmark"])[:24],
-                        case=cid,
-                        task=self.cases[cid]["task"],
-                        a=a,
-                        b=b,
-                        reason="protected_landmark",
-                        value=None,
+                _, _, v, e, _ = data(cid)
+                if (v[a:b] & ~e[a:b]).all():
+                    hits.append(
+                        dict(
+                            id=digest([cid, a, b, "protected_landmark"])[:24],
+                            case=cid,
+                            task=self.cases[cid]["task"],
+                            a=a,
+                            b=b,
+                            reason="protected_landmark",
+                            support_status="possible_physiology",
+                            value=None,
+                        )
                     )
-                )
-            hits.extend(self.isolated_spikes(parent))
+            hits.extend(self.isolated_spikes(versions, hits))
         enrich(self.cases, data, self.profile, hits)
+        candidates = []
+        peers = defaultdict(list)
+        for c in self.cases.values():
+            peers[acquisition(c)].append(c["id"])
+        for h in hits:
+            cid = h["case"]
+            c = self.cases[cid]
+            t, x, v, e, pr = data(cid)
+            a, b = h["a"], h["b"]
+            left, r = max(0, a - round(5 * c["fs"])), min(len(t), b + round(5 * c["fs"]))
+            h["context_digest"] = array_hash(x[left:r], v[left:r], e[left:r])
+            peer_context = {}
+            for peer in peers[acquisition(c)]:
+                if peer == cid:
+                    continue
+                pt, px, pv, pe, _ = data(peer)
+                left, right = np.searchsorted(pt, [t[a] - 5, t[b - 1] + 1 / c["fs"] + 5])
+                peer_context[peer] = array_hash(pt[left:right], px[left:right], pv[left:right], pe[left:right])
+            h["peer_context_digest"] = digest(peer_context)
+            support = pr["detector_support"]
+            if h.get("support_status") is None:
+                uncertain = any(
+                    lo < b and a < hi
+                    for k in ("unsupported_ranges", "boundary_uncertain_ranges", "empty_event_ranges")
+                    for lo, hi in support[k]
+                )
+                h["support_status"] = "insufficient_support" if uncertain else "suspected_artifact"
+            candidates.append(ledger.source_row(h, c, versions[cid]["content_hash"], t, self.round))
+        return hits, candidates
+
+    def prepare(self, scope):
+        path = self.path / "discovery.json"
+        stamp = self.path / "discovery.sha256"
+        if path.exists() and stamp.exists():
+            if sha(path) != stamp.read_text():
+                raise ValueError("Changed patient discovery checkpoint")
+            doc = read(path)
+            if doc.get("profile_sha256") != sha(self.path / "patient_profile.json"):
+                raise ValueError("Changed patient profile checkpoint")
+            if doc["scope"] != scope:
+                raise ValueError("Changed discovery scope")
+            if doc["complete"]:
+                self.prepared_ok = True
+                return
+        self.profile = patient_profiles(list(self.cases.values()), self.loader(self.raw))
+        write(self.path / "patient_profile.json", self.profile)
+        parent = self.raw if self.blocked else self.coarse()
+        # Failures from a requested detector stop the *global* barrier; identity remains available.
+        try:
+            hits, candidates = self.scan_version(parent)
+            baseline = (
+                discover(
+                    self.root,
+                    list(self.cases.values()),
+                    self.loader(self.raw),
+                    self.profile,
+                    self.config["inspection_preset"],
+                    self.config.get("secondary_probe", False),
+                )
+                if any(parent[k]["content_hash"] != self.raw[k]["content_hash"] for k in parent)
+                else [h for h in hits if h["reason"] not in ("protected_landmark", "isolated_spike_candidate")]
+            )
+
+        except (ValueError, RuntimeError, ImportError) as exc:
+            from .provenance import StopRequested
+
+            if isinstance(exc, StopRequested):
+                raise
+            self.prepared_ok = False
+            self.unresolved.append(dict(stage="inspection", reason=str(exc), record=self.rid))
+            hits, candidates, baseline = [], [], []
+        coverage = {}
+        data = self.loader(parent)
+        for cid in self.cases:
+            _, _, _, _, pr = data(cid)
+            coverage[cid] = dict(
+                version=parent[cid]["content_hash"],
+                native=pr["detector_support"],
+                tools=getattr(self, "scan_coverage", {}).get(cid, {}),
+                status="scanned" if self.prepared_ok else "failed",
+            )
+        write(
+            path,
+            dict(
+                scope=scope,
+                parents={cid: a["artifact_id"] for cid, a in parent.items()},
+                complete=self.prepared_ok,
+                profile_sha256=sha(self.path / "patient_profile.json"),
+                coverage=coverage,
+                baseline_alerts=dict(Counter(h["reason"] for h in baseline)),
+                hits=hits,
+                candidates=candidates,
+                unresolved=self.unresolved,
+                pending=dict(self.pending_ranges),
+                spent_views=self.spent_gate_views,
+            ),
+        )
+        stamp.write_text(sha(path))
+
+    def run(self):
+        cases = list(self.cases.values())
+        doc = read(self.path / "discovery.json")
+        self.profile = read(self.path / "patient_profile.json")
+        self.pending_ranges = defaultdict(list, doc["pending"])
+        self.spent_gate_views = doc["spent_views"]
+        self.unresolved = list(doc["unresolved"])
+        parent = {cid: read(self.root / "artifacts" / aid / "artifact.json") for cid, aid in doc["parents"].items()}
+        data = self.loader(parent)
+        hits = doc["hits"]
+        if self.blocked:
+            self.unresolved.append(dict(stage="candidate_freeze_pending", reason="incomplete_required_inspection"))
+            for cid, c in self.cases.items():
+                self.pending_ranges[cid].append((0, c["n"]))
         groups = self.groups(hits, data)
-        final = self.spike_trials(self.fine(parent, hits), hits)
+        if not self.blocked:
+            self.phase("repair_running")
+        final = self.spike_trials(self.filter_trials(self.fine(parent, hits), hits), hits)
         after = self.loader(final)
-        joints, controls = locations(cases, data, hits, uncertain_only=True)
+        self.phase("final_rescan")
+        self.round = 2
+        residual, current = self.scan_version(final) if not self.blocked else (hits, doc["candidates"])
+        diff = ledger.difference(doc["candidates"], current)
+        reopened = set(diff["new"] + diff["invalidated"])
+        first_trials = [r for name in ("spike-trials", "filter-trials") for r in read(self.path / (name + ".json"))]
+        rejected = {r["hit"]: r for r in first_trials if r["status"] == "rollback"}
+        first_gate = self.path / "fine-gate.json"
+        if first_gate.is_file():
+            mask_gates = read(first_gate)
+            for h in hits:
+                g = mask_gates.get(h["case"])
+                if h["wave_requested"] == "mark_invalid" and g and not g["accepted"]:
+                    rejected[h["id"]] = {"reason": "mask_review_or_gate_declined"}
+        reopened.update(rejected)
+        release = {h["id"]: h for h in hits if h["id"] not in set(diff["resolved"])}
+        todo = [h for h in residual if h["id"] in reopened]
+        for h in todo:
+            if h["id"] in rejected:
+                h["feedback"] = rejected[h["id"]].get("reason")
+        history = [dict(revision=2, changes=diff)]
+        if todo and not self.blocked:
+            self.revision = digest(
+                [self.revision, [(c["candidate_id"], c["evidence_digest"], c["source_version_id"]) for c in current]]
+            )
+            write(
+                self.path / "candidate-revision-2.json",
+                dict(id=self.revision, candidates=current, targets=[h["id"] for h in todo]),
+            )
+            self.groups(todo, after)
+            revised = self.spike_trials(self.filter_trials(self.fine(final, todo), todo), todo)
+            release.update((h["id"], h) for h in todo)
+            if any(revised[cid]["artifact_id"] != final[cid]["artifact_id"] for cid in final):
+                final = revised
+                after = self.loader(final)
+                self.round = 3
+                residual, next_rows = self.scan_version(final)
+                change = ledger.difference(current, next_rows)
+                history.append(dict(revision=3, changes=change))
+                for hid in change["resolved"]:
+                    release.pop(hid, None)
+                stale = set(change["new"] + change["invalidated"])
+                for h in residual:
+                    if h["id"] in stale:
+                        self.pending_ranges[h["case"]].append((h["a"], h["b"]))
+                        h.update(
+                            group="final-rescan",
+                            wave_requested="preserve",
+                            measurement="review",
+                            decision_source="unreviewed",
+                            state="need_evidence",
+                        )
+                        self.unresolved.append(dict(stage="final_rescan", hit=h["id"], reason="rework_limit"))
+                        release[h["id"]] = h
+                current = next_rows
+        for cid in self.cases:
+            support = after(cid)[4]["detector_support"]
+            for k in ("unsupported_ranges", "boundary_uncertain_ranges", "empty_event_ranges"):
+                self.pending_ranges[cid].extend(support[k])
+        release_hits = list(release.values())
+        write(
+            self.path / "rescan.json",
+            dict(
+                revision=self.round,
+                revision_id=digest(current),
+                changes=diff,
+                candidates=current,
+                history=history,
+                coverage=getattr(self, "scan_coverage", {}),
+                reassessed=[h["id"] for h in todo],
+                status="pending" if self.blocked else "executed",
+            ),
+        )
+        joints, controls = locations(cases, after, release_hits, uncertain_only=True)
         remaining = []
         first_pass = []
         for index, loc in enumerate(joints):
@@ -629,7 +1182,7 @@ class Record:
         chosen = {loc["event"] for loc in selected}
         places = [("joint", x) for x in selected] + [("control", x) for x in controls]
         ranks = {cid: np.zeros(c["n"], np.int8) for cid, c in self.cases.items()}
-        for h in hits:
+        for h in release_hits:
             rank = ranks[h["case"]][h["a"] : h["b"]]
             np.maximum(rank, QUALITIES.index(h["measurement"]), out=rank)
             cid = h["case"]
@@ -668,7 +1221,7 @@ class Record:
                     )
                 )
                 locs[key] = tile
-        direct = self.reviewer.decide("joint", requests)
+        direct = self.reviewer.decide("joint", requests) if not self.blocked else {}
         overrides = defaultdict(list)
         for r in requests:
             key = r["id"]
@@ -682,9 +1235,28 @@ class Record:
             for k in r["data"]["keys"]:
                 overrides[k].append((key, exceptions.get(k, d["default"] if d else "review")))
         write(self.path / "direct-review.json", dict(locations=locs, decisions=direct, ranked_joint_episodes=joints))
+        trials = {r["hit"]: r for name in ("spike-trials", "filter-trials") for r in read(self.path / (name + ".json"))}
+        gate_path = self.path / "fine-gate.json"
+        gates = read(gate_path) if gate_path.exists() else {}
+        for h in hits:
+            if "final_fine_excluded" not in h:
+                cid, a, b = h["case"], h["a"], h["b"]
+                _, x, v, e, _ = data(cid)
+                _, y, v2, e2, _ = after(cid)
+                h.update(
+                    final_fine_modified=int(changed(x[a:b], y[a:b]).sum()),
+                    final_fine_excluded=int(((v[a:b] & ~e[a:b]) & ~(v2[a:b] & ~e2[a:b])).sum()),
+                )
+            h["state"] = ledger.disposition(h, trials, gates).value
+        revised_trials = {r["hit"]: r for f in self.path.glob("*-trials-rescan.json") for r in read(f)}
+        last_gate = self.path / "fine-gate-rescan.json"
+        for h in release_hits:
+            if "state" not in h:
+                h["state"] = ledger.disposition(h, revised_trials, read(last_gate) if last_gate.exists() else {}).value
+        write(self.path / "release-dispositions.json", release_hits)
         write(self.path / "hit-dispositions.json", hits)
         related = defaultdict(lambda: defaultdict(list))
-        for h in hits:
+        for h in release_hits:
             related[h["case"]][h["group"]].append((h["a"], h["b"]))
         unviewed = defaultdict(list)
         unchecked_tiles = tiles[len(selected) :] + [locs[k] for k in locs if "-joint-" in k and k not in direct]
@@ -750,24 +1322,13 @@ class Record:
                 measurements=dict(Counter(row["quality"] for row in members)),
                 modified_samples=artifact["stats"]["modified_samples"],
             )
-        residual = (
-            discover(
-                self.root,
-                cases,
-                after,
-                self.profile,
-                self.config["inspection_preset"],
-                self.config.get("secondary_probe", False),
-            )
-            if any(final[k]["content_hash"] != parent[k]["content_hash"] for k in final)
-            else hits
-        )
         report = dict(
             record=self.rid,
-            baseline_alerts=dict(Counter(h["reason"] for h in baseline_hits)),
+            baseline_alerts=doc["baseline_alerts"],
             blocks=len(cases),
             hits=len(hits),
             groups=len(groups),
+            rescan_diff={k: len(v) for k, v in diff.items()},
             joint_episodes=len(joints),
             joint_selected=len(chosen),
             joint_view_count=len(selected),
@@ -866,6 +1427,7 @@ def export_atlas(target, cases, raw, final, measures):
 
 
 def run_dataset(root, config, stage):
+    started = time.monotonic()
     root = Path(root).resolve()
     manifest = read(root / "dataset_manifest.json")
     implementation = implementation_hash()
@@ -878,26 +1440,65 @@ def run_dataset(root, config, stage):
     records = defaultdict(list)
     for c in manifest["cases"]:
         records[c["record_id"]].append(c)
+    knowledge = Knowledge(
+        config.get("knowledge_root")
+        or (root.parent / ".signalmind-knowledge" if config["method"] == "dataset_agent" else root / "knowledge")
+    )
+    snapshot = knowledge.freeze(root, config.get("replay_from"))
     scope = digest(
         [
             implementation,
+            snapshot["id"],
+            SPEC_ID,
             manifest,
-            {k: v for k, v in config.items() if k not in ("budget_root", "replay_from", "receipt_seed")},
+            {
+                k: v
+                for k, v in config.items()
+                if k not in ("budget_root", "replay_from", "receipt_seed", "knowledge_root")
+            },
         ]
     )
     spec = root / "dataset-stage.json"
     if spec.exists() and read(spec)["scope"] != scope:
         raise ValueError("Dataset configuration changed; use a fresh workspace")
     write(spec, dict(scope=scope))
+    write(root / "acceptance-spec.json", dict(id=SPEC_ID, checks=ACCEPTANCE, implementation=implementation))
     results = {}
     waves = {}
     record_reports = []
     complete_rows = []
-    with Reviewer(root, config).session() as rev:
+    from contextlib import nullcontext
+
+    from tsmcp.inspection.run import inspect
+
+    stage("inspection_running")
+    inspection = inspect(
+        root, root / "inspection", config["inspection_preset"], config.get("inspection_wall_seconds", 3600)
+    )
+    rev = Reviewer(root, config)
+    rev.knowledge = knowledge
+    rev.snapshot = snapshot
+    stage("candidate_freeze_pending")
+    with rev.session() if inspection["inspection_complete"] else nullcontext(rev):
+        stages = []
         for rid, cases in sorted(records.items()):
             check_stop(root)
-            stage("dataset_record")
             r = Record(root, cases, bank, config, rev, implementation)
+            r.set_stage = stage
+            r.blocked = not inspection["inspection_complete"]
+            rev.record = rid
+            r.prepare(scope)
+            stages.append(r)
+        frozen = ledger.freeze(root, stages, scope, inspection)
+        stage("candidate_frozen" if frozen["status"] == "candidate_frozen" else "candidate_freeze_pending")
+        for r in stages:
+            rid = r.rid
+            cases = list(r.cases.values())
+            rev.record = rid
+            r.revision = frozen["revision_id"]
+            r.blocked = frozen["status"] != "candidate_frozen"
+            check_stop(root)
+            stage("dataset_record")
             checkpoint = r.path / "checkpoint.json"
             if checkpoint.exists():
                 cp = read(checkpoint)
@@ -929,12 +1530,12 @@ def run_dataset(root, config, stage):
                 used_receipts = sorted(
                     {
                         d["receipt"]
-                        for fn in ("coarse-selection", "repair-plans")
+                        for fn in ("coarse-selection", "repair-plans", "repair-plans-rescan")
                         if (r.path / (fn + ".json")).exists()
                         for d in read(r.path / (fn + ".json")).values()
                     }
                 )
-                for name in ("coarse-gate", "fine-gate"):
+                for name in ("coarse-gate", "fine-gate", "fine-gate-rescan"):
                     if (r.path / (name + ".json")).exists():
                         used_receipts.extend(
                             d["receipt"]
@@ -944,6 +1545,19 @@ def run_dataset(root, config, stage):
                         )
                 used_receipts.extend(d["receipt"] for d in read(r.path / "direct-review.json")["decisions"].values())
                 used_receipts.extend(d["receipt"] for d in read(r.path / "spike-trials.json") if "receipt" in d)
+                used_receipts.extend(
+                    d["receipt"] for f in r.path.glob("*-trials*.json") for d in read(f) if "receipt" in d
+                )
+                # Include upstream blind observations, expanded-view and rework receipts in the checkpoint.
+                for key in list(set(used_receipts)):
+                    saved = read(root / "dataset-receipts" / (key + ".json"))
+                    for item in saved.get("evidence", []):
+                        for field in ("blind_observation", "diagnostic_receipt"):
+                            upstream = item[1].get(field, {}).get("receipt")
+                            if upstream:
+                                used_receipts.append(upstream)
+                        if item[1].get("prior_review"):
+                            used_receipts.append(item[1]["prior_review"])
                 receipt_hashes = {k: sha(root / "dataset-receipts" / (k + ".json")) for k in sorted(set(used_receipts))}
                 if not rep["unresolved"]:
                     write(
@@ -1054,5 +1668,40 @@ def run_dataset(root, config, stage):
                 calls=own,
             ),
         )
+    summary.update(
+        outcome=outcome(status),
+        candidate_revision=frozen["revision_id"],
+        discovery_status=frozen["status"],
+        acceptance_spec_id=SPEC_ID,
+    )
+    state = read(root / "agent_state.json")
+    state.update(outcome(status), outcome=outcome(status))
+    write(root / "agent_state.json", state)
+    knowledge.record(
+        "shared",
+        dict(
+            scope=scope,
+            release=vid,
+            acceptance_spec=SPEC_ID,
+            coverage=summary["discovery_status"],
+            reference_accuracy=None,
+            evidence_ref=digest(waves),
+            kind="run_outcome",
+        ),
+    )
+    summary["candidate_ledger"] = ledger.release_index(root, stages)
+    release = Run(
+        scope=scope,
+        implementation=implementation,
+        skill_snapshot=snapshot["id"],
+        acceptance_spec_id=SPEC_ID,
+        candidate_revision=frozen["revision_id"],
+        records=sorted(records),
+        outcome=outcome(status),
+    )
+    write(root / "ledger/run.json", release.model_dump())
+    from .provenance import dataset_telemetry
+
+    write(export / "telemetry.json", dataset_telemetry(manifest, ids, calls, time.monotonic() - started, summary))
     write(export / "evaluation_report.json", summary)
     return summary

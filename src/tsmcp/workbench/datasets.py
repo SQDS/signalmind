@@ -10,6 +10,8 @@ import numpy as np
 from tsmcp.cleaning.common import TASKS, digest, read, sha, write
 from tsmcp.cleaning.provenance import check_stop, emit
 
+INSPECTION_TASKS = {**TASKS, "RESP": dict(task_id="respiration_quality", unit="source_units")}
+
 
 def files_for(dataset):
     root = Path(dataset["path"]).resolve()
@@ -109,6 +111,52 @@ def mask_vector(data, spec, key, n, default):
     return value.astype(bool)
 
 
+def storage_records(files, dataset, mapping):
+    """Only an explicit, ordered logical record can span multiple storage files."""
+    groups = mapping.get("storage_shards", {})
+    base = Path(dataset["path"])
+    base = base if base.is_dir() else base.parent
+    lookup = {str(f.resolve().relative_to(base.resolve())): f for f in files}
+    assigned = set()
+    for record, names in groups.items():
+        if (
+            not isinstance(names, list)
+            or not names
+            or len(names) != len(set(names))
+            or any(n not in lookup or n in assigned for n in names)
+        ):
+            raise ValueError("Storage shards must uniquely partition selected files by relative path")
+        assigned.update(names)
+        yield "r_" + digest(["storage_record", record])[:12], [lookup[n] for n in names]
+    for name, f in lookup.items():
+        if name not in assigned:
+            yield "r_" + digest(str(f.resolve()))[:12], [f]
+
+
+def assembled_fields(paths, mapping):
+    if len(paths) == 1:
+        return fields(paths[0])
+    channels = mapping["channels"]
+    if any(not c.get("time_key", mapping.get("time_key")) for c in channels):
+        raise ValueError("Joining declared shards requires observed timestamps on every channel")
+    pieces = [fields(p) for p in paths]
+    axes = {}
+    for c in channels:
+        for k in (c["key"], c.get("valid_key"), c.get("estimated_key"), c.get("time_key", mapping.get("time_key"))):
+            if k is not None:
+                axis = c.get("sample_axis", 0) if k != c.get("time_key", mapping.get("time_key")) else 0
+                if k in axes and axes[k] != axis:
+                    raise ValueError("Conflicting sample axes across shards")
+                axes[k] = axis
+    if mapping.get("patient_key"):
+        axes[mapping["patient_key"]] = 0
+    combined = {}
+    for k, axis in axes.items():
+        if all(k in piece for piece in pieces):
+            combined[k] = np.concatenate([np.atleast_1d(piece[k]) for piece in pieces], axis=axis)
+    return combined
+
+
 def import_dataset(dataset, mapping, output, tasks, selected_files=None):
     output = Path(output)
     cases, sources, missing, failures, patients = [], [], [], [], set()
@@ -128,19 +176,24 @@ def import_dataset(dataset, mapping, output, tasks, selected_files=None):
     channels = mapping.get("channels", [])
     observed_path = output / "audit_sources.json"
     observed = read(observed_path) if observed_path.exists() else {}
-    if not channels or any(c["task"] not in TASKS for c in channels):
-        raise ValueError("Map at least one ECG, PPG or ABP channel")
+    if not channels or any(c["task"] not in INSPECTION_TASKS for c in channels):
+        raise ValueError("Select supported channel mappings")
     if len({c["task"] for c in channels}) != len(channels):
         raise ValueError("Map one native channel per task in this first version")
-    for path in files:
+    for rid, paths in storage_records(files, dataset, mapping):
         check_stop(output)
-        source_hash, rid = sha(path), "r_" + digest(str(path.resolve()))[:12]
-        if str(path) in observed and observed[str(path)] != source_hash:
-            raise ValueError("Previously audited source file changed; create a new task")
-        observed[str(path)] = source_hash
+        parts = []
+        for path in paths:
+            h = sha(path)
+            if str(path) in observed and observed[str(path)] != h:
+                raise ValueError("Previously audited source file changed; create a new task")
+            observed[str(path)] = h
+            parts.append({"file": path.name, "sha256": h})
+        path = paths[0]
+        source_hash = parts[0]["sha256"] if len(parts) == 1 else digest(parts)
         write(observed_path, observed)
         try:
-            data = fields(path)
+            data = assembled_fields(paths, mapping)
         except (ValueError, OSError) as exc:
             failures.append({"record_id": rid, "task": None, "reason": str(exc)})
             continue
@@ -159,6 +212,7 @@ def import_dataset(dataset, mapping, output, tasks, selected_files=None):
                 "record_id": rid,
                 "source_sha256": source_hash,
                 "source_name": path.name,
+                "storage_parts": parts,
                 "patient_key": "import::" + str(patient) if patient else None,
             }
         )
@@ -188,7 +242,7 @@ def import_dataset(dataset, mapping, output, tasks, selected_files=None):
                         "id": cid,
                         "record_id": rid,
                         "task": task,
-                        "task_id": TASKS[task]["task_id"],
+                        "task_id": INSPECTION_TASKS[task]["task_id"],
                         "field": channel["key"],
                         "unit": unit,
                         "fs": fs,
@@ -196,6 +250,8 @@ def import_dataset(dataset, mapping, output, tasks, selected_files=None):
                         "duration_s": float((b - a) / fs),
                         "source_sha256": source_hash,
                         "source_range_samples": [int(a), int(b)],
+                        "timeline_kind": "observed" if has_time else "relative_only",
+                        "storage_parts": parts,
                         "has_source_time": has_time,
                         "source_time_conflicts": [],
                         "mapping_hash": digest(mapping),

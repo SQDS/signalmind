@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from tsmcp.inspection.support import native_support
 from tsmcp.plugins.ecg.rpeaks import detect_r_peaks
 from tsmcp.plugins.pressure.pulses import detect_pulses_unguided
 from tsmcp.processing import intervals
@@ -27,7 +28,7 @@ def probe(values, time, fs, valid, estimated, task):
         if len(breaks):
             raise ValueError("Probe input crosses an unexplained time gap")
         if task == "ECG":
-            positions = detect_r_peaks(x[start:stop], fs) + start
+            positions = detect_r_peaks(x[start:stop], fs) + start if fs > 40 else np.empty(0, dtype=int)
             feet = None
         else:
             f, p, _ = detect_pulses_unguided(x[start:stop], fs)
@@ -79,6 +80,7 @@ def probe(values, time, fs, valid, estimated, task):
         "intervals": periods,
         "pressures": pressures,
         "eligible_support": intervals(support),
+        "detector_support": native_support(support, fs, task, events),
         "measurement_support": intervals(covered),
         "measured_samples": int(covered.sum()),
         "estimated_samples_excluded": int(np.sum(estimated)),

@@ -86,6 +86,31 @@ def create_app(repo=None, state_dir=None, *, run_jobs=True):
         limit = min(1000, max(1, int(request.query_params.get("limit", 200))))
         return JSONResponse({"total": len(result), "events": [e for e in result if e["sequence"] > cursor][:limit]})
 
+    def read_quality(rid, offset, limit, state):
+        root = store.run_path(rid) / "ledger"
+        if not (root / "release.json").exists():
+            return {"status": "pending", "items": []}
+        from itertools import islice
+
+        from tsmcp.cleaning.common import read
+
+        with (root / "candidates.jsonl").open() as stream:
+            rows = (row for row in map(json.loads, stream) if state is None or row["state"] == state)
+            batch = list(islice(rows, offset, offset + limit))
+        return dict(read(root / "release.json"), status="published", offset=offset, items=batch)
+
+    async def quality(request):
+        query = request.query_params
+        return JSONResponse(
+            await run_in_threadpool(
+                read_quality,
+                request.path_params["rid"],
+                max(0, int(query.get("offset", 0))),
+                min(500, max(1, int(query.get("limit", 50)))),
+                query.get("state"),
+            )
+        )
+
     async def evidence(request):
         rid, q = request.path_params["rid"], request.query_params
         ids = set(q.get("ids", "").split(",")) - {""}
@@ -335,6 +360,7 @@ def create_app(repo=None, state_dir=None, *, run_jobs=True):
         Route("/api/runs/{rid}/versions", versions),
         Route("/api/runs/{rid}/events", events),
         Route("/api/runs/{rid}/evidence", evidence),
+        Route("/api/runs/{rid}/quality", quality),
         Route("/api/runs/{rid}/stream", stream),
         Route("/api/runs/{rid}/cases", cases),
         Route("/api/runs/{rid}/cases/{cid}", detail),

@@ -12,7 +12,7 @@ from tsmcp.processing import ProcessingSession, intervals
 from .common import changed, read, time_support
 from .vendor.frozen_v01 import fixed
 
-STANDARD_OPERATIONS = {"notch", "remove_tone", "lowpass", "mark_invalid"}
+STANDARD_OPERATIONS = {"notch", "remove_tone", "lowpass", "mark_invalid", "interpolate", "local_detrend"}
 
 
 def diagnose(values, fs, valid=None):
@@ -119,7 +119,7 @@ class RecipeContext:
         return selected
 
     def apply(self, operation, ranges, *, explanation=None, **parameters):
-        allowed = STANDARD_OPERATIONS | ({"interpolate", "local_detrend"} if self.extension else set())
+        allowed = STANDARD_OPERATIONS
         if operation not in allowed:
             raise ValueError(f"Operation {operation!r} is not registered in this recipe category")
         before = self.current

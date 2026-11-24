@@ -12,7 +12,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --group dev --group eval --extra cleaning --extra workbench
-      - run: .venv/bin/python -m pytest -q tests/test_dataset_entry.py tests/test_processing.py tests/test_devkit_inspection.py tests/test_workbench.py
+      - name: Run public offline review tests
+        run: >-
+          .venv/bin/python -m pytest -q tests/test_dataset_entry.py tests/test_processing.py
+          tests/test_devkit_inspection.py tests/test_workbench.py tests/test_planned_quality.py
+          tests/test_spike_repair_evidence.py -k "not skill_promotion_needs_sandbox_and_independent_paired_references"
   secrets:
     runs-on: ubuntu-latest
     steps:

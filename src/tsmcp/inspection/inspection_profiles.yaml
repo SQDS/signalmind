@@ -1,0 +1,60 @@
+# 初始配置模板；所有数值均需按模态、采样率和数据集校准。
+profiles:
+  quick:
+    sentinel:
+      enabled: true
+      full_input_coverage: true
+      window_seconds: 2.0
+      hop_seconds: 1.0
+    multiscale:
+      windows_seconds: [5, 20, 60]
+      hop_ratio: 0.5
+    escalation:
+      candidate_threshold: high
+      visual_review: representative_and_disagreement
+      unknown_sampling: low
+    budgets:
+      max_llm_calls_per_record: 8
+      max_images_per_call: 4
+
+  balanced:
+    sentinel:
+      enabled: true
+      full_input_coverage: true
+      window_seconds: 2.0
+      hop_seconds: 0.5
+    multiscale:
+      windows_seconds: [5, 10, 20, 60, 100]
+      hop_ratio: 0.5
+    escalation:
+      candidate_threshold: medium
+      visual_review: representative_boundary_disagreement_unknown
+      unknown_sampling: medium
+    budgets:
+      max_llm_calls_per_record: 24
+      max_images_per_call: 6
+
+  deep:
+    sentinel:
+      enabled: true
+      full_input_coverage: true
+      window_seconds: 1.0
+      hop_seconds: 0.25
+    multiscale:
+      windows_seconds: [5, 10, 20, 60, 100]
+      hop_ratio: 0.25
+    escalation:
+      candidate_threshold: low
+      visual_review: expanded
+      unknown_sampling: high
+    budgets:
+      max_llm_calls_per_record: 64
+      max_images_per_call: 8
+
+acceptance:
+  immutable_raw: true
+  unknown_is_not_clean: true
+  model_cannot_override_hard_gate: true
+  require_parent_version: true
+  require_review_receipt: true
+  require_final_rescan: true

@@ -4,6 +4,7 @@ from collections import defaultdict
 
 import numpy as np
 
+from tsmcp.inspection.profiles import profile
 from tsmcp.plugins.ecg.rpeaks import detect_r_peaks
 from tsmcp.plugins.pressure.pulses import detect_pulses_unguided
 from tsmcp.processing import intervals
@@ -12,6 +13,7 @@ from tsmcp.processing import intervals
 PRESETS = {
     "quick": {"sensitivity": 0.25, "factor": 1.5},
     "balanced": {"sensitivity": 0.5, "factor": 1.0},
+    "deep": {"sensitivity": 0.75, "factor": 0.65},
     "thorough": {"sensitivity": 0.75, "factor": 0.65},
 }
 SCALES = (5, 10, 20, 60, 100)
@@ -80,7 +82,7 @@ def abp_pulse_episodes(x, fs, factor, *, evaluated=None):
         yield int(feet[margin + a]), int(feet[margin + b]), float(np.max(score)), factor
 
 
-def ecg_excursions(x, fs, span, factor):
+def ecg_excursions(x, fs, scales, factor):
     """Locate bounded amplitude excursions with sustained displacement and observed recovery."""
     history = max(4, round(1.5 * fs))
     recovery = max(2, round(0.12 * fs))
@@ -91,13 +93,18 @@ def ecg_excursions(x, fs, span, factor):
     changes = np.abs(np.diff(x))
     if not len(changes):
         return
-    edge_threshold = min(span, 8 * np.percentile(changes, 90))
+    edge_threshold = np.copy(scales)
+    for left in range(0, len(changes), history):
+        right = min(len(changes), left + history)
+        refs = np.r_[changes[max(0, left - 2 * history) : left], changes[right : right + 2 * history]]
+        if refs.size:
+            edge_threshold[left:right] = np.minimum(scales[left:right], 8 * np.percentile(refs, 90))
     for seed in np.flatnonzero(changes > edge_threshold) + 1:
         if seed < next_seed or seed + minimum + recovery > len(x):
             continue
         anchor = x[max(seed - history, last_return) : seed]
         center = float(np.median(anchor))
-        width = max(float(np.ptp(np.percentile(anchor, [5, 95]))), span * 0.05)
+        width = max(float(np.ptp(np.percentile(anchor, [5, 95]))), scales[seed - 1] * 0.05)
         limit = 1.5 * width
         left = int(seed)
         while left > seed - recovery and abs(x[left - 1] - center) > limit:
@@ -261,18 +268,96 @@ def ecg_repeated_qrs_edges(x, fs, edges):
     return explained
 
 
+def local_step_scale(x, fs):
+    """Estimate the background pulse swing from flanks, excluding the tested tile and its two edges."""
+    out = np.full(max(0, len(x) - 1), np.nan)
+    hop = max(1, min(round(fs / 4), len(x) // 4))
+    flank = max(4, round(2 * fs))
+    for a in range(0, len(out), hop):
+        b = min(a + hop, len(out))
+        sides = [x[max(0, a - flank) : a], x[b + 1 : b + 1 + flank]]
+        refs = np.concatenate(sides)
+        if len(refs) >= 4:
+            lo, hi = np.percentile(refs, [5, 95])
+            out[a:b] = max(hi - lo, np.finfo(float).eps * max(1.0, abs(lo), abs(hi)))
+    return out
+
+
+def local_qrs_matches(x, fs, edges):
+    # Bound both the detector thresholds and the reference beat bank used to explain an edge.
+    matched = np.zeros(len(edges), bool)
+    width, flank = max(1, round(8 * fs)), round(10 * fs)
+    for start in range(0, len(x), width):
+        i, j = np.searchsorted(edges, [start, start + width])
+        if i < j:
+            left = max(0, start - flank)
+            matched[i:j] = ecg_repeated_qrs_edges(x[left : start + width + flank], fs, edges[i:j] - left)
+    return matched
+
+
+def transient_cores(x, fs, scale, factor):
+    """Complete 1–4 sample excursions with quiet observed flanks, allowing both residual polarities."""
+    d = np.abs(np.diff(x))
+    edges = np.flatnonzero(d > 0.40 * factor * scale) + 1
+    last = 0
+    for a in edges:
+        if a < max(4, last) or a + 4 >= len(x):
+            continue
+        for width in range(1, min(4, max(1, round(0.04 * fs))) + 1):
+            b = a + width
+            if b + 4 > len(x):
+                break
+            swing = scale[a - 1]
+            if d[b - 1] <= 0.4 * factor * swing or abs(x[a - 1] - x[b]) > 0.25 * swing:
+                continue
+            flank = max(np.abs(np.diff(x[a - 4 : a])).max(), np.abs(np.diff(x[b : b + 4])).max())
+            residual = x[a:b] - np.linspace(x[a - 1], x[b], width + 2)[1:-1]
+            if flank > 0.18 * swing or np.abs(residual).min() <= 0.2 * factor * swing:
+                continue
+            bipolar = residual.min() < 0 < residual.max()
+            yield (
+                int(a),
+                int(b),
+                "biphasic_core" if bipolar else "impulsive_core",
+                float(np.abs(residual).max() / swing),
+            )
+            last = b + 1
+            break
+
+
 def scan(values, usable, causes, fs, modality, preset):
     factor = PRESETS[preset]["factor"]
+    cfg = profile(preset)
+    high_band = HIGH_BAND_HZ.get(modality)
     signals = []
     evidence = []
     coverage = defaultdict(int)
     valid_runs = intervals(usable)
+    assessed = {
+        k: np.zeros(len(values), bool)
+        for k in (
+            "large_step",
+            "flat_run",
+            "spectrum",
+            "impulsive_core",
+            "biphasic_core",
+            "ecg_excursion",
+            "ecg_baseline_shift",
+            "abp_pulse_episode",
+            *causes,
+        )
+    }
+    spectral_frames = []
+    context_values = defaultdict(list)
+
     for cause, mask in causes.items():
+        assessed[cause][:] = True
         for a, b in intervals(mask):
             signals.append((a, b, cause, b - a, 1, "samples"))
     for a, b in valid_runs:
         x = values[a:b]
         n = len(x)
+        assessed["flat_run"][a:b] = n >= max(3, round(fs * 0.5))
         # Constant stretches and short abrupt changes survive averaging in the long views.
         for start, stop in intervals(np.diff(x) == 0):
             length = stop - start + 1
@@ -281,27 +366,41 @@ def scan(values, usable, causes, fs, modality, preset):
         span = float(np.ptp(np.percentile(x, [5, 95]))) or float(np.ptp(x))
         delta = np.abs(np.diff(x))
         if modality == "ABP" and span > 0:
-            for start, stop, value, threshold in abp_pulse_episodes(x, fs, factor):
+            for start, stop, value, threshold in abp_pulse_episodes(
+                x, fs, factor, evaluated=assessed["abp_pulse_episode"][a:b]
+            ):
                 signals.append((a + start, a + stop, "abp_pulse_episode", value, threshold, "local_cycle_ratio"))
+        scales = local_step_scale(x, fs)
+        if n > 8:
+            for kind in ("impulsive_core", "biphasic_core"):
+                assessed[kind][a + 4 : b - 4] = np.isfinite(scales[3 : n - 5])
+        if modality == "ECG" and n > 3 * fs:
+            assessed["ecg_excursion"][a + round(1.5 * fs) : b - round(0.32 * fs)] = True
+        step_limit = {"ECG": 0.55, "PPG": 0.60, "ABP": 0.65, "RESP": 0.80}[modality] * factor
+        assessed["large_step"][a : b - 1] = np.isfinite(scales)
+        edges = np.flatnonzero(delta > step_limit * scales)
+        if modality == "ECG" and edges.size:
+            repeated = local_qrs_matches(x, fs, edges)
+            coverage["ecg_step_edges"] += len(edges)
+            coverage["ecg_step_edges_matching_repeated_qrs"] += int(repeated.sum())
+            edges = edges[~repeated]
+        for i in edges:
+            signals.append(
+                (a + int(i), a + int(i) + 2, "large_step", float(delta[i] / scales[i]), step_limit, "local_swing_ratio")
+            )
+        for left, right, kind, strength in transient_cores(x, fs, scales, factor):
+            signals.append((a + left, a + right, kind, strength, 0.40 * factor, "local_swing_ratio"))
         if span > 0:
-            edges = np.flatnonzero(delta > 0.55 * span * factor)
-            if modality == "ECG" and edges.size:
-                repeated = ecg_repeated_qrs_edges(x, fs, edges)
-                coverage["ecg_step_edges"] += len(edges)
-                coverage["ecg_step_edges_matching_repeated_qrs"] += int(repeated.sum())
-                edges = edges[~repeated]
-            for i in edges:
-                signals.append(
-                    (a + int(i), a + int(i) + 2, "large_step", float(delta[i] / span), 0.55 * factor, "ratio")
-                )
             if modality == "ECG":
-                for start, stop, value, threshold in ecg_excursions(x, fs, span, factor):
+                for start, stop, value, threshold in ecg_excursions(x, fs, scales, factor):
                     signals.append((a + start, a + stop, "ecg_excursion", value, threshold, "local_span_ratio"))
-                for start, stop, value, threshold in ecg_baseline_shifts(x, fs, factor):
+                for start, stop, value, threshold in ecg_baseline_shifts(
+                    x, fs, factor, evaluated=assessed["ecg_baseline_shift"][a:b]
+                ):
                     signals.append((a + start, a + stop, "ecg_baseline_shift", value, threshold, "flank_span_ratio"))
         # 2-s short frames, 1-s stride. Power fractions are dimensionless.
-        frame = max(2, round(2 * fs))
-        for left, right in windows(n, frame, max(1, round(fs))):
+        frame = max(2, round(cfg["sentinel"]["window_seconds"] * fs))
+        for left, right in windows(n, frame, max(1, round(fs * cfg["sentinel"]["hop_seconds"]))):
             y = x[left:right]
             if len(y) < max(16, round(fs)):
                 coverage["spectral_insufficient_samples"] += len(y)
@@ -312,6 +411,9 @@ def scan(values, usable, causes, fs, modality, preset):
             denominator = float(power[freq >= 0.5].sum())
             if denominator <= 0:
                 continue
+            assessed["spectrum"][a + left : a + right] = True
+            if high_band is not None and fs / 2 > high_band:
+                spectral_frames.append((a + left, a + right, float(power[freq >= high_band].sum() / denominator)))
             for hz in (50, 60):
                 if hz + 1 >= fs / 2:
                     continue
@@ -323,15 +425,15 @@ def scan(values, usable, causes, fs, modality, preset):
                 contrast = power[band].max() / max(float(np.median(power[near])), 1e-30)
                 if v >= LINE_FRACTION * factor and contrast >= 5:
                     signals.append((a + left, a + right, f"line_{hz}", v, LINE_FRACTION * factor, "power_fraction"))
-            if fs / 2 > HIGH_BAND_HZ[modality]:
+            if high_band is not None and fs / 2 > high_band:
                 v = float(power[freq >= HIGH_BAND_HZ[modality]].sum() / denominator)
                 threshold = HIGH_FRACTION[modality] * factor
                 if v >= threshold:
                     signals.append((a + left, a + right, "high_frequency", v, threshold, "power_fraction"))
         # Compute context summaries only from this support; coarse windows never gate short-frame findings.
-        for scale in SCALES:
+        for scale in cfg["multiscale"]["windows_seconds"]:
             size = max(1, round(scale * fs))
-            for left, right in windows(n, size, max(1, size // 2)):
+            for left, right in windows(n, size, max(1, round(size * cfg["multiscale"]["hop_ratio"]))):
                 if right - left < size:
                     coverage[f"{scale}s_short_runs"] += 1
                     continue
@@ -341,6 +443,7 @@ def scan(values, usable, causes, fs, modality, preset):
                     # A slow trend can be physiologic; retained as evidence only.
                     edge = max(1, len(segment) // 5)
                     drift = float((segment[-edge:].mean() - segment[:edge].mean()) / span)
+                    context_values[scale].append((a + left, a + right, float(abs(drift))))
                     if abs(drift) >= 0.5:
                         evidence.append(
                             {"range": [a + left, a + right], "window_s": scale, "level_change_over_span": drift}
@@ -359,9 +462,107 @@ def scan(values, usable, causes, fs, modality, preset):
                 previous["end"] = max(end, previous["end"])
                 previous["value"] = max(value, previous["value"])
                 previous["trigger_count"] += 1
+                previous["observations"].append([start, end, float(value), float(threshold)])
             else:
                 previous = dict(
-                    start=start, end=end, kind=kind, value=value, threshold=threshold, unit=unit, trigger_count=1
+                    start=start,
+                    end=end,
+                    kind=kind,
+                    value=value,
+                    threshold=threshold,
+                    unit=unit,
+                    trigger_count=1,
+                    observations=[[start, end, float(value), float(threshold)]],
                 )
                 events.append(previous)
+    coverage["tool_results"] = {}
+    for tool, mask in assessed.items():
+        alerts = [
+            [e["start"], e["end"]]
+            for e in events
+            if e["kind"] == tool or (tool == "spectrum" and e["kind"] in ("line_50", "line_60", "high_frequency"))
+        ]
+        coverage["tool_results"][tool] = dict(
+            status=("suspected_artifact" if alerts else "evaluated_no_alert") if mask.any() else "insufficient_support",
+            evaluated_ranges=intervals(mask),
+            unsupported_ranges=intervals(~mask),
+            alert_ranges=alerts,
+        )
+    for kind, applicable in (("ecg_excursion", "ECG"), ("ecg_baseline_shift", "ECG"), ("abp_pulse_episode", "ABP")):
+        if modality != applicable:
+            coverage["tool_results"][kind]["status"] = "not_applicable"
+    for hz in (50, 60):
+        k = f"line_{hz}"
+        coverage["tool_results"][k] = dict(
+            coverage["tool_results"]["spectrum"],
+            alert_ranges=[[e["start"], e["end"]] for e in events if e["kind"] == k],
+        )
+        row = coverage["tool_results"][k]
+        if hz + 1 >= fs / 2:
+            row.update(status="not_applicable", evaluated_ranges=[], unsupported_ranges=[[0, len(values)]])
+        else:
+            row["status"] = (
+                "suspected_artifact"
+                if row["alert_ranges"]
+                else "evaluated_no_alert"
+                if row["evaluated_ranges"]
+                else "insufficient_support"
+            )
+    coverage["multiscale"] = {}
+    for scale in cfg["multiscale"]["windows_seconds"]:
+        records = context_values[scale]
+        support = np.zeros(len(values), bool)
+        bad = np.zeros(len(values), bool)
+        for left, right, score in records:
+            support[left:right] = True
+            if score >= 0.5:
+                bad[left:right] = True
+        scores = [row[2] for row in records]
+        coverage["multiscale"][str(scale)] = dict(
+            window_seconds=scale,
+            hop_seconds=scale * cfg["multiscale"]["hop_ratio"],
+            metric="absolute_level_change_over_swing",
+            evaluated_ranges=intervals(support),
+            unsupported_ranges=intervals(~support),
+            status="suspected_artifact" if bad.any() else "evaluated_no_alert" if scores else "insufficient_support",
+            median=float(np.median(scores)) if scores else None,
+            mean=float(np.mean(scores)) if scores else None,
+            low_quantile=float(np.percentile(scores, 5)) if scores else None,
+            worst=max(scores, default=None),
+            support_samples=int(support.sum()),
+            bad_time_fraction=float(bad.sum() / support.sum()) if scores else None,
+            longest_bad_seconds=max((b - a for a, b in intervals(bad)), default=0) / fs,
+            event_count=len(intervals(bad)),
+        )
+    coverage["tool_results"]["high_frequency"] = dict(
+        coverage["tool_results"]["spectrum"],
+        alert_ranges=[[e["start"], e["end"]] for e in events if e["kind"] == "high_frequency"],
+    )
+    high = coverage["tool_results"]["high_frequency"]
+    if high_band is None or fs / 2 <= high_band:
+        high.update(status="not_applicable", evaluated_ranges=[], unsupported_ranges=[[0, len(values)]])
+    else:
+        high["status"] = (
+            "suspected_artifact"
+            if high["alert_ranges"]
+            else "evaluated_no_alert"
+            if high["evaluated_ranges"]
+            else "insufficient_support"
+        )
+    if spectral_frames:
+        powers = np.array([f[2] for f in spectral_frames])
+        bad = np.zeros(len(values), bool)
+        for left, r, v in spectral_frames:
+            if v >= HIGH_FRACTION[modality] * factor:
+                bad[left:r] = True
+        coverage["high_frequency_summary"] = dict(
+            mean=float(powers.mean()),
+            median=float(np.median(powers)),
+            low_quantile=float(np.percentile(powers, 5)),
+            worst=float(powers.max()),
+            event_count=len(intervals(bad)),
+            bad_time_fraction=float(bad.sum() / assessed["spectrum"].sum()),
+            longest_bad_seconds=max((r - left for left, r in intervals(bad)), default=0) / fs,
+            support_samples=int(assessed["spectrum"].sum()),
+        )
     return sorted(events, key=lambda e: (e["start"], e["end"], e["kind"])), dict(coverage), evidence

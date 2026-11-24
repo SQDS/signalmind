@@ -36,3 +36,18 @@ eval/results/group-repair-v2-20261122/*
 .env.*
 *.key
 *.pem
+
+# Public evaluation sources and aggregate summaries
+!eval/results/quality-live-20261123/
+eval/results/quality-live-20261123/*
+!eval/results/quality-live-20261123/annotation_view.py
+!eval/results/quality-live-20261123/ecg_scale.py
+!eval/results/quality-live-20261123/grade.py
+!eval/results/quality-live-20261123/synthetic_input.py
+!eval/results/quality-plan-20261123/
+eval/results/quality-plan-20261123/*
+!eval/results/quality-plan-20261123/README.md
+!eval/results/spike-repair-20261124/
+eval/results/spike-repair-20261124/*
+!eval/results/spike-repair-20261124/compare.py
+!eval/results/spike-repair-20261124/README.md

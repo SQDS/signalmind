@@ -16,13 +16,19 @@ from tsmcp.cleaning.common import digest, read, sha, time_support, write
 from tsmcp.cleaning.provenance import check_stop
 from tsmcp.core import dsp, peaks
 from tsmcp.inspection.contracts import validate
-from tsmcp.inspection.scan import HIGH_BAND_HZ, HIGH_FRACTION, LINE_FRACTION, PRESETS, SCALES, scan
+from tsmcp.inspection.profiles import profile as inspection_profile
+from tsmcp.inspection.scan import HIGH_BAND_HZ, HIGH_FRACTION, LINE_FRACTION, PRESETS, scan
 from tsmcp.plugins.ecg import rpeaks
 from tsmcp.plugins.pressure import pulses
 from tsmcp.processing import intervals
 
 HERE = Path(__file__).parent
-AUDIT_FRACTION = 0.05
+
+
+def sampling_fraction(preset):
+    return {"low": 0.02, "medium": 0.05, "high": 0.1}[inspection_profile(preset)["escalation"]["unknown_sampling"]]
+
+
 HARD = {"source_exclusion", "missing", "device_clipped", "missing_flag", "source_invalid", "source_estimated"}
 
 
@@ -67,10 +73,10 @@ def specification(cases, preset, run_id, profile_hash, wall_seconds):
         inspection_profile_id="vital-" + preset,
         inspection_profile_version="1.4.0",
         inspection=dict(
-            window_seconds=list(SCALES),
-            stride_policy_id="half-window-end-anchored",
+            window_seconds=inspection_profile(preset)["multiscale"]["windows_seconds"],
+            stride_policy_id=f"hop-{inspection_profile(preset)['multiscale']['hop_ratio']}-end-anchored",
             sensitivity=PRESETS[preset]["sensitivity"],
-            audit_fraction=AUDIT_FRACTION,
+            audit_fraction=sampling_fraction(preset),
         ),
         repair_policy=dict(
             max_attempts_per_candidate=0,
@@ -174,19 +180,52 @@ def inspect_block(path, case, preset, run_id):
         )
         candidates.append(row)
         alarm[a:b] = True
+    from tsmcp.cleaning.contracts import ToolResult
+    from tsmcp.cleaning.ledger import region
+
+    supported = usable.copy()
+    tool_results = []
+    for name, r in levels["tool_results"].items():
+        result = ToolResult(
+            tool_id=name,
+            status=r["status"],
+            evaluated_ranges=[region(case["id"], a, b) for a, b in r["evaluated_ranges"]],
+            unsupported_ranges=[region(case["id"], a, b) for a, b in r["unsupported_ranges"]],
+            evidence_refs=[k["evidence_id"] for k in evidence if k["kind"] == name],
+        )
+        tool_results.append(result.model_dump(mode="json"))
+        if r["status"] != "not_applicable":
+            for a, b in r["unsupported_ranges"]:
+                supported[a:b] = False
     tiles = []
-    for start, end in intervals(usable & ~alarm):
+    for start, end in intervals(supported & ~alarm):
         size = max(1, round(5 * case["fs"]))
         for a in range(start, end, size):
             region = coord(case, a, min(a + size, end))
             # Seed and scope determine an independent Bernoulli sample; profiles share the raw-data seed.
-            if int(digest([111101, version_id(case), region])[:16], 16) / 2**64 < AUDIT_FRACTION:
+            if int(digest([111101, version_id(case), region])[:16], 16) / 2**64 < sampling_fraction(preset):
                 tiles.append(
                     dict(
                         range=region,
                         observed_version_id=version_id(case),
-                        inclusion_probability=AUDIT_FRACTION,
+                        inclusion_probability=sampling_fraction(preset),
                         label_source=None,
+                        verdict="unreviewed",
+                    )
+                )
+    unknown_tiles = []
+    for start, end in intervals(usable & ~supported & ~alarm):
+        size = max(1, round(5 * case["fs"]))
+        for a in range(start, end, size):
+            coordinate = coord(case, a, min(a + size, end))
+            prob = sampling_fraction(preset)
+            if int(digest(["unknown", 111101, version_id(case), coordinate])[:16], 16) / 2**64 < prob:
+                unknown_tiles.append(
+                    dict(
+                        range=coordinate,
+                        observed_version_id=version_id(case),
+                        inclusion_probability=prob,
+                        source_status="insufficient_support",
                         verdict="unreviewed",
                     )
                 )
@@ -198,12 +237,15 @@ def inspect_block(path, case, preset, run_id):
         eligible=int(usable.sum()),
         candidate_samples=int(alarm.sum()),
         observed_candidate_samples=int((alarm & usable).sum()),
-        negative_samples=int((usable & ~alarm).sum()),
+        negative_samples=int((supported & ~alarm).sum()),
+        insufficient_samples=int((usable & ~supported & ~alarm).sum()),
+        tool_results=tool_results,
         candidates=candidates,
         evidence=evidence,
         context_levels=levels,
         trends=trends,
         audit=tiles,
+        unknown_audit=unknown_tiles,
     )
 
 
@@ -226,6 +268,7 @@ def inspect_locked(workspace, out, preset, wall_seconds, manifest):
     profile = dict(
         preset=preset,
         thresholds=PRESETS[preset],
+        settings=inspection_profile(preset),
         line_fraction=LINE_FRACTION,
         high_fraction=HIGH_FRACTION,
         high_band=HIGH_BAND_HZ,
@@ -237,7 +280,7 @@ def inspect_locked(workspace, out, preset, wall_seconds, manifest):
         pulse_detector_sha256=sha(Path(pulses.__file__)),
         numpy_version=np.__version__,
         audit_seed=111101,
-        audit_fraction=AUDIT_FRACTION,
+        audit_fraction=sampling_fraction(preset),
     )
     scope = digest([manifest, profile, wall_seconds])
     run_id = "inspect-" + scope[:24]
@@ -264,7 +307,7 @@ def inspect_locked(workspace, out, preset, wall_seconds, manifest):
     with ExitStack() as stack:
         streams = {
             k: stack.enter_context((out / (k + ".jsonl")).open("w"))
-            for k in ("candidates", "evidence", "coverage", "context", "negative_audit")
+            for k in ("candidates", "evidence", "coverage", "context", "negative_audit", "unknown_audit")
         }
         csvfile = stack.enter_context((out / "intervals.csv").open("w", encoding="utf-8-sig", newline=""))
         writer = csv.writer(csvfile)
@@ -301,7 +344,12 @@ def inspect_locked(workspace, out, preset, wall_seconds, manifest):
                     json.dumps(dict(case_id=c["id"], n=c["n"], status="failed", reason=str(exc))) + "\n"
                 )
                 continue
-            for name, key in (("candidates", "candidates"), ("evidence", "evidence"), ("negative_audit", "audit")):
+            for name, key in (
+                ("candidates", "candidates"),
+                ("evidence", "evidence"),
+                ("negative_audit", "audit"),
+                ("unknown_audit", "unknown_audit"),
+            ):
                 for row in block[key]:
                     streams[name].write(json.dumps(row, allow_nan=False) + "\n")
             coverage = {
@@ -314,6 +362,8 @@ def inspect_locked(workspace, out, preset, wall_seconds, manifest):
                     "eligible",
                     "candidate_samples",
                     "negative_samples",
+                    "insufficient_samples",
+                    "tool_results",
                     "context_levels",
                 )
             }
@@ -345,6 +395,7 @@ def inspect_locked(workspace, out, preset, wall_seconds, manifest):
                     candidate_channel_s=block["candidate_samples"] / c["fs"],
                     eligible_channel_s=block["eligible"] / c["fs"],
                     observed_candidate_s=block["observed_candidate_samples"] / c["fs"],
+                    insufficient_channel_s=block["insufficient_samples"] / c["fs"],
                 )
             )
     complete = attempted == len(cases) and not (
@@ -390,6 +441,7 @@ def inspect_locked(workspace, out, preset, wall_seconds, manifest):
                         "evidence.jsonl",
                         "context.jsonl",
                         "negative_audit.jsonl",
+                        "unknown_audit.jsonl",
                         "intervals.csv",
                         "inspection_summary.json",
                     )

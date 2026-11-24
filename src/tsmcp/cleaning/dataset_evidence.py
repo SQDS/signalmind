@@ -26,7 +26,7 @@ def native_rows(probe):
 
 def acquisition(case):
     # Row numbers are local to a Vital patient. Imported CSV/NPZ files use a source sample range.
-    if case.get("normalized_windows") or (not case.get("has_source_time", True) and "source_range_samples" not in case):
+    if case.get("normalized_windows") or (not case.get("has_source_time", True) and not case.get("clock_id")):
         return case["record_id"], (case["id"],)
     return case["record_id"], tuple(case.get("rows", case.get("source_range_samples", [case["id"]])))
 
@@ -55,15 +55,15 @@ def patient_profiles(cases, data):
     return profiles
 
 
-def discover(workspace, cases, data, profiles, preset, secondary=False):
+def discover(workspace, cases, data, profiles, preset, secondary=False, coverage=None):
     hits = []
     for c in cases:
         check_stop(workspace)
         cid = c["id"]
         _, x, v, e, pr = data(cid)
         ok = v & ~e & np.isfinite(x)
-        events, _, _ = scan(x, ok, {"unavailable": ~ok}, c["fs"], c["task"], preset)
-        rows = [(i["start"], i["end"], i["kind"], i["value"]) for i in events]
+        events, levels, _ = scan(x, ok, {"unavailable": ~ok}, c["fs"], c["task"], preset)
+        rows = [(i["start"], i["end"], i["kind"], i["value"], i["threshold"], i["observations"]) for i in events]
         if secondary:
             from tsmcp.inspection.secondary import compare_block
 
@@ -73,15 +73,57 @@ def discover(workspace, cases, data, profiles, preset, secondary=False):
             for sample, _, value in observations:
                 tiles[sample // width].append(value)
             rows.extend(
-                (i * width, min((i + 1) * width, len(x)), "probe_disagreement", max(values))
+                (i * width, min((i + 1) * width, len(x)), "probe_disagreement", max(values), None, [])
                 for i, values in tiles.items()
             )
+        if coverage is not None:
+            coverage[cid] = dict(
+                sentinel=levels["tool_results"],
+                multiscale=levels["multiscale"],
+                native=pr["detector_support"],
+                secondary="not_requested",
+            )
+            if secondary:
+                assessed = np.zeros(len(x), bool)
+                for left, right in intervals(ok):
+                    if right - left >= 4 * c["fs"]:
+                        margin = round(c["fs"])
+                        assessed[left + margin : right - margin] = True
+                coverage[cid]["secondary"] = dict(
+                    evaluated_ranges=intervals(assessed),
+                    unsupported_ranges=intervals(~assessed),
+                    status="suspected_artifact"
+                    if observations
+                    else "evaluated_no_alert"
+                    if assessed.any() and pr["events"]
+                    else "insufficient_support",
+                )
         pf = profiles[c["task"]]
         # A record can have observed amplitude or beats even when the other reference is unavailable.
         amp = pf["amplitude"] or {"low": -np.inf, "high": np.inf}
         rate = pf["rate"] or {"low": -np.inf, "high": np.inf}
-        rows.extend((a, b, k, val) for a, b, k, val, _ in patient_flags(x, ok, c["fs"], beat_pairs(pr), amp, rate))
-        for a, b, k, val in rows:
+        rows.extend(
+            (a, b, k, val, limit, [])
+            for a, b, k, val, limit in patient_flags(x, ok, c["fs"], beat_pairs(pr), amp, rate)
+        )
+        if coverage is not None:
+            pairs = beat_pairs(pr)
+            for kind in ("y_high", "y_low", "rate_high", "rate_low"):
+                assessed = ok.copy() if kind.startswith("y_") and pf["amplitude"] else np.zeros(len(x), bool)
+                if kind.startswith("rate") and pf["rate"]:
+                    for a, b in pairs:
+                        if ok[a : b + 1].all():
+                            assessed[a:b] = True
+                coverage[cid]["sentinel"][kind] = dict(
+                    evaluated_ranges=intervals(assessed),
+                    unsupported_ranges=intervals(~assessed),
+                    status="suspected_artifact"
+                    if any(r[2] == kind for r in rows)
+                    else "evaluated_no_alert"
+                    if assessed.any()
+                    else "insufficient_support",
+                )
+        for a, b, k, val, threshold, observations in rows:
             hits.append(
                 dict(
                     id=digest([cid, int(a), int(b), k])[:24],
@@ -90,6 +132,8 @@ def discover(workspace, cases, data, profiles, preset, secondary=False):
                     a=int(a),
                     b=int(b),
                     reason=k,
+                    threshold=threshold,
+                    observations=observations,
                     value=float(val) if val is not None else None,
                 )
             )
@@ -172,6 +216,10 @@ def view(path, loc, cases, before, after=None):
     peers = sorted(
         [p for p in cases.values() if acquisition(p) == block], key=lambda p: ("ECG", "PPG", "ABP").index(p["task"])
     )
+    if after is not None and "spike_retest" in loc:
+        from .spike_evidence import spike_view
+
+        return spike_view(path, loc, cases, peers, before, after)
     start, end = loc["start"], loc["end"]
     fig = Figure(figsize=(9.2, 1.85 * len(peers) + 0.65), layout="constrained")
     FigureCanvasAgg(fig)

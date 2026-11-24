@@ -28,6 +28,31 @@ def baselines(workspace):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    contracts_cmd = sub.add_parser("contracts", help="Export the current machine-readable clean-run contracts")
+    contracts_cmd.add_argument("--out", type=Path, required=True)
+    undo = sub.add_parser("rollback", help="Restore a published patch's exact parent to a separate export")
+    undo.add_argument("--workspace", type=Path, required=True)
+    undo.add_argument("--patch", required=True)
+    undo.add_argument("--out", type=Path, required=True)
+    knowledge = sub.add_parser(
+        "knowledge", help="Register paper cards, run isolated recipe trials, and manage validated skill versions"
+    )
+    commands = knowledge.add_subparsers(dest="action", required=True)
+    for name in ("search", "card", "propose", "trial", "sandboxed", "evaluated", "approved", "active", "deprecated"):
+        cmd = commands.add_parser(name)
+        cmd.add_argument("--library", type=Path, required=True)
+        if name == "search":
+            cmd.add_argument("--query", required=True)
+        if name in ("card", "propose", "trial", "evaluated"):
+            cmd.add_argument("--input", type=Path, required=True)
+        if name in ("trial", "sandboxed"):
+            cmd.add_argument("--workspace", type=Path, required=True)
+        if name == "sandboxed":
+            cmd.add_argument("--trial-version", required=True)
+        if name in ("sandboxed", "evaluated", "approved", "active", "deprecated"):
+            cmd.add_argument("--skill", required=True)
+            cmd.add_argument("--version", required=True)
+        cmd.set_defaults(input=None, workspace=None, trial_version=None)
     pipeline = sub.add_parser("dataset", help="run the dataset-level grouping and review pipeline")
     pipeline.add_argument("--spec", type=Path, required=True)
     pipeline.add_argument("--workspace", type=Path, required=True)
@@ -55,6 +80,22 @@ def main():
             p.add_argument("--version")
             p.add_argument("--reference", type=Path)
     args = parser.parse_args()
+    if args.command == "contracts":
+        from .contracts import Candidate, Patch, RepairPlan, ReviewReceipt, Run, RunOutcome, ToolResult
+
+        for model in (Run, RunOutcome, Candidate, ToolResult, RepairPlan, Patch, ReviewReceipt):
+            write(args.out / (model.__name__ + ".schema.json"), model.model_json_schema())
+        return
+    if args.command == "rollback":
+        from .rollback import rollback
+
+        print(json.dumps(rollback(args.workspace, args.patch, args.out), ensure_ascii=False, indent=2))
+        return
+    if args.command == "knowledge":
+        from .knowledge import cli
+
+        print(json.dumps(cli(args), ensure_ascii=False, indent=2))
+        return
     if args.command == "dataset":
         from .dataset_entry import dataset_cli
 

@@ -478,3 +478,18 @@ def test_inspect_only_publishes_candidates_without_model(tmp_path):
     assert not (root / "versions").exists()
     code, files = http(app, "GET", f"/api/runs/{job['id']}/exports")
     assert code == 200 and {"intervals.csv", "candidate_manifest.json"} <= {f["name"] for f in files}
+
+
+def test_candidate_ledger_endpoint_pages_and_filters(tmp_path):
+    app = create_app(tmp_path, tmp_path / "ui", run_jobs=False)
+    root = tmp_path / "r"
+    app.state.store.add_run(root)
+    assert http(app, "GET", "/api/runs/r/quality")[1]["status"] == "pending"
+    rows = [
+        dict(candidate_id=f"c{i}", state=state)
+        for i, state in enumerate(["preserved", "pending_budget", "pending_budget"])
+    ]
+    write(root / "ledger/release.json", dict(candidates=len(rows)))
+    (root / "ledger/candidates.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    status, page = http(app, "GET", "/api/runs/r/quality?state=pending_budget&offset=1&limit=1")
+    assert status == 200 and page["status"] == "published" and page["items"] == [rows[2]]

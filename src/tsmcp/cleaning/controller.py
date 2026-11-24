@@ -7,6 +7,8 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
+
 from tsmcp.followup.pattern import detect, pattern_schema
 from tsmcp.followup.rescan import scan_version
 
@@ -533,6 +535,29 @@ class CleaningTools:
                     raise ValueError(
                         f"Inspect required changed/control location: {view}; support-only edits also require review"
                     )
+            from .quality_gate import waveform_gate
+            from .tasks import probe
+
+            # The legacy controller and the dataset entry share the same non-overridable checks.
+            for cid, artifact in version["results"].items():
+                parent_id = artifact.get("parent_artifact_id")
+                parent = read(self.workspace / "artifacts" / parent_id / "artifact.json") if parent_id else None
+                c = self.cases[cid]
+                _, t, x, v, e = load_arrays(self.workspace, c, parent)
+                _, _, y, v2, e2 = load_arrays(self.workspace, c, artifact)
+                if not (np.array_equal(x, y, equal_nan=True) and np.array_equal(v, v2) and np.array_equal(e, e2)):
+                    before_probe = (
+                        read(self.workspace / parent["probe_path"]) if parent else probe(x, t, c["fs"], v, e, c["task"])
+                    )
+                    gate = waveform_gate(
+                        c,
+                        (t, x, v, e, before_probe),
+                        (t, y, v2, e2, read(self.workspace / artifact["probe_path"])),
+                        artifact["operations"],
+                    )
+                    write(self.workspace / "quality-gates" / version_id / (cid + ".json"), gate)
+                    if gate["status"] != "passed":
+                        raise ValueError(f"Hard quality gate rejected {cid}")
             if version["stage"] == "batch":
                 required = {c["id"] for c in self.cases.values() if c["task"] == task}
                 if set(version["case_ids"]) != required:
@@ -710,6 +735,11 @@ class CleaningTools:
                     )
         self.state["complete"] = complete
         self.state["finalized"] = decision_owner == "model"
+        from .contracts import outcome
+
+        self.state["outcome"] = outcome(
+            ("completed" if complete else "partial") if self.state["finalized"] else "running"
+        )
         self.state["delivery"] = report
         self.save()
         return report

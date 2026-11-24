@@ -9,49 +9,83 @@ import numpy as np
 
 from tsmcp.cleaning.agent import BudgetClient, vision_preflight
 from tsmcp.cleaning.common import digest, read, sha, write
+from tsmcp.cleaning.contracts import published_run
 from tsmcp.followup.reviewer import review
 from tsmcp.inspection.run import load_channel, version_id
 
 
-def investigate(workspace, inspection, candidate_id, out, flank, *, client_factory=BudgetClient):
-    frozen = read(inspection / "candidate_manifest.json")
+def load_seed(workspace, inspection, candidate_id):
     cand_path = inspection / "candidates.jsonl"
-    if sha(cand_path) != frozen["files"]["candidates.jsonl"]:
+    current = (inspection / "release.json").is_file()
+    if current:
+        release = read(inspection / "release.json")
+        revision = release["freeze"]
+        expected = release["sha256"]
+    else:
+        frozen = read(inspection / "candidate_manifest.json")
+        revision = frozen["run_id"]
+        expected = frozen["files"]["candidates.jsonl"]
+    if sha(cand_path) != expected:
         raise ValueError("Frozen candidate manifest mismatch")
     with cand_path.open() as stream:
-        candidate = next(
-            (
-                json.loads(line)
-                for line in stream
-                if candidate_id in line and json.loads(line)["candidate_id"] == candidate_id
-            ),
-            None,
-        )
-    if candidate is None or candidate["run_id"] != frozen["run_id"]:
+        c = next((row for row in map(json.loads, stream) if row["candidate_id"] == candidate_id), None)
+    if not c or not current and c["run_id"] != revision:
         raise ValueError("Unknown candidate")
-    region = candidate["range"]
-    case = next(c for c in read(workspace / "dataset_manifest.json")["cases"] if c["id"] == region["block_id"])
+    region = c["region"] if current else c["range"]
+    case = next(v for v in read(workspace / "dataset_manifest.json")["cases"] if v["id"] == region["block_id"])
     path = workspace / "public" / case["id"] / "input.npz"
-    if version_id(case) != candidate["source_version_id"] or sha(path) != case["input_sha256"]:
+    if sha(path) != case["input_sha256"]:
+        raise ValueError("Source changed")
+    source = c["source_version_id"]
+    if current:
+        from tsmcp.cleaning.common import array_hash
+        from tsmcp.cleaning.engine import load_arrays
+
+        prepared = read(workspace / "records" / case["record_id"] / "discovery.json")["parents"][case["id"]]
+        released = read(workspace / "agent_state.json")["accepted"][case["id"]]["artifact_id"]
+        ids = [released, prepared]
+        for f in (workspace / "records" / case["record_id"] / "patches").glob("*.json"):
+            doc = read(f)
+            if doc["plan"]["write_ranges"][0]["block_id"] == case["id"]:
+                ids.append(doc["candidate_version_id"])
+        for aid in dict.fromkeys(ids):
+            art = read(workspace / "artifacts" / aid / "artifact.json")
+            if art["content_hash"] == source:
+                _, t, x, v, e = load_arrays(workspace, case, art)
+                if array_hash(x, t, v, e) != source:
+                    raise ValueError("Seed version content changed")
+                return case, region, x, v & ~e, source, revision
+        raise ValueError("Candidate waveform version unavailable")
+    if version_id(case) != source:
         raise ValueError("Original waveform differs from frozen trigger")
     x, masks = load_channel(path, case)
-    usable = ~np.logical_or.reduce(list(masks.values()))
+    return case, region, x, ~np.logical_or.reduce(list(masks.values())), source, revision
+
+
+def investigate(workspace, inspection, candidate_id, out, flank, *, client_factory=BudgetClient):
+    case, region, x, usable, source, revision = load_seed(workspace, inspection, candidate_id)
     if not usable[region["start_sample"] : region["end_sample"]].any():
         raise ValueError("Seed has no observed support for this morphology detector")
     out.mkdir(parents=True, exist_ok=True)
     # All follow-ups to this finalized workspace share one ledger, even in different output folders.
     # During active cleaning the controller uses the live run's existing BudgetClient.
-    state = read(workspace / "agent_state.json")
-    if not state.get("finalized", state.get("complete", False)):
+    if not published_run(workspace):
         raise ValueError("Use the cleaning controller for an active workspace")
-    budget_root = workspace.resolve().parent / ".pattern-review-budgets" / workspace.resolve().name
+    cfg = read(workspace / "run.json").get("config", {}) if (workspace / "run.json").exists() else {}
+    budget_root = (
+        Path(cfg["budget_root"]).resolve()
+        if cfg.get("budget_root")
+        else workspace.resolve().parent / ".pattern-review-budgets" / workspace.resolve().name
+    )
     budget_root.mkdir(parents=True, exist_ok=True)
     with (budget_root / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         binding = dict(
             candidate_id=candidate_id,
             source=case["input_sha256"],
-            inspection=frozen["run_id"],
+            inspection=revision,
+            seed_version=source,
+            accepted_version=read(workspace / "agent_state.json")["accepted_tasks"][case["task"]],
             flank_s=flank,
             reviewer_hash=sha(Path(__file__).with_name("reviewer.py")),
             detector_hash=sha(Path(__file__).with_name("pattern.py")),
@@ -62,6 +96,8 @@ def investigate(workspace, inspection, candidate_id, out, flank, *, client_facto
             return read(item / "decision.json")
         (budget_root / "private").mkdir(mode=0o700, exist_ok=True)
         if not (budget_root / "api_budget.json").exists():
+            if not (workspace / "api_budget.json").is_file():
+                raise ValueError("Live follow-up requires an authorized model budget")
             ledger = read(workspace / "api_budget.json")
             prior = out / "api_budget.json"
             if prior.exists():
@@ -79,7 +115,7 @@ def investigate(workspace, inspection, candidate_id, out, flank, *, client_facto
         try:
             vision_preflight(client)
             report = review(
-                client, item, case, x, usable, version_id(case), [region["start_sample"], region["end_sample"]], flank
+                client, item, case, x, usable, source, [region["start_sample"], region["end_sample"]], flank
             )
         finally:
             client.close()

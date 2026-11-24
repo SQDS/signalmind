@@ -101,6 +101,8 @@ class BudgetClient:
             committed = self.ledger["estimated_peak_usd"] + self.ledger["unknown_charge_reserve_usd"]
             if committed + self.RESERVE > self.cap:
                 raise RuntimeError("api_budget_exhausted")
+            if getattr(self, "before_attempt", None):
+                self.before_attempt()
             call = {
                 "number": len(self.ledger["calls"]) + 1,
                 "status": "reserved",
@@ -123,7 +125,9 @@ class BudgetClient:
             try:
                 kwargs = {"model": self.model, "system": system, "messages": messages, "max_tokens": 16384}
                 if self.compact_tools:
-                    kwargs.update(max_tokens=4096, thinking={"type": "disabled"})
+                    kwargs.update(max_tokens=getattr(self, "output_limit", 4096), thinking={"type": "disabled"})
+                if getattr(self, "deadline", None):
+                    kwargs["timeout"] = max(0.1, self.deadline - time.monotonic())
                 if tools:
                     kwargs["tools"] = tools
                 response = self.client.messages.create(**kwargs)

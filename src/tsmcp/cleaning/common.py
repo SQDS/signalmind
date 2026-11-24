@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +15,14 @@ TASKS = {
     "PPG": {"task_id": "ppg_waveform_for_pulse", "unit": "source_units", "field": "PPG_Record"},
     "ABP": {"task_id": "abp_waveform_for_pressure", "unit": "mmHg", "field": "ABP_Raw"},
 }
+
+
+@contextmanager
+def locked(path):
+    path.mkdir(parents=True, exist_ok=True)
+    with (path / ".lock").open("a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
 
 
 def read(path):
@@ -85,10 +95,11 @@ def implementation_hash():
     files += [
         root / "processing.py",
         root / "pipeline.py",
-        root / "inspection" / "scan.py",
-        root / "inspection" / "patient_profile.py",
-        root / "inspection" / "secondary.py",
+        root / "workbench" / "datasets.py",
+        root / "workbench" / "runner.py",
     ]
+    files += sorted((root / "inspection").glob("*.yaml")) + sorted((root / "inspection").glob("*.py"))
+    files += sorted((root / "inspection" / "schemas").glob("*.json"))
     files += sorted((root / "plugins").rglob("*.py"))
     files += sorted((root / "core").rglob("*.py"))
     return digest({str(p.relative_to(root)): sha(p) for p in files})

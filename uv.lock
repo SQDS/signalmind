@@ -2732,6 +2732,7 @@ cleaning = [
 ]
 inspection = [
     { name = "jsonschema" },
+    { name = "pyyaml" },
     { name = "referencing" },
 ]
 processing = [
@@ -2779,6 +2780,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "python-multipart", marker = "extra == 'workbench'", specifier = ">=0.0.20" },
     { name = "pyyaml", marker = "extra == 'cleaning'", specifier = ">=6" },
+    { name = "pyyaml", marker = "extra == 'inspection'", specifier = ">=6" },
     { name = "pyyaml", marker = "extra == 'workbench'", specifier = ">=6" },
     { name = "referencing", marker = "extra == 'cleaning'", specifier = ">=0.37" },
     { name = "referencing", marker = "extra == 'inspection'", specifier = ">=0.37" },

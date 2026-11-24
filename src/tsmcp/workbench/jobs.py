@@ -51,9 +51,14 @@ class Jobs:
     def create(self, config):
         dataset = self.store.dataset(config["dataset_id"])
         tasks = config.get("tasks", ["ECG", "PPG", "ABP"])
-        if not tasks or not set(tasks) <= {"ECG", "PPG", "ABP"}:
-            raise ValueError("Select supported tasks")
         method = config.get("method", "agent")
+        modalities = (
+            {"ECG", "PPG", "ABP", "RESP"}
+            if method == "inspect_only" and dataset["format"] != "vital"
+            else {"ECG", "PPG", "ABP"}
+        )
+        if not tasks or not set(tasks) <= modalities:
+            raise ValueError("Select supported tasks")
         cap = float(config.get("api_cap", 5))
         if method == "inspect_only":
             from tsmcp.inspection.scan import PRESETS
@@ -64,7 +69,7 @@ class Jobs:
         if method in {"dataset_rules", "dataset_agent"}:
             from tsmcp.cleaning.dataset_entry import settings
 
-            if any(k in config for k in ("budget_root", "replay_from", "receipt_seed")):
+            if any(k in config for k in ("budget_root", "replay_from", "receipt_seed", "knowledge_root")):
                 raise ValueError("External ledgers and receipt directories are CLI options")
             config = settings({**config, "api_cap": 0 if method == "dataset_rules" else cap})
             cap = config["api_cap"]
