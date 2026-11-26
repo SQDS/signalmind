@@ -214,3 +214,83 @@ def published_run(root):
     return bool(
         state.get("accepted_tasks") and report.exists() and read(report).get("status") in ("completed", "partial")
     )
+
+
+class RepairAttempt(Contract):
+    """One operation evaluation, including requests which stopped before numerical execution."""
+
+    attempt_id: str
+    record_id: str
+    block_id: str
+    candidate_ids: list[str]
+    phase: Literal["coarse", "fine"]
+    round: int
+    operation: str
+    parent_version_id: str | None
+    candidate_version_id: str | None
+    candidate_content_hash: str | None
+    candidate_revision: str | None
+    plan_id: str | None
+    parameters: dict
+    read_ranges: list[SampleRange]
+    write_ranges: list[SampleRange]
+    receipt_ids: list[str]
+    request_ids: list[str]
+    patch_id: str | None
+    applicability: str
+    review_evidence: list[dict]
+    operator_invoked: bool | None
+    candidate_generated: bool
+    hard_gate: str
+    review: str
+    commit: Literal["committed", "not_committed"]
+    outcome: Literal["waveform_repair", "waveform_trial", "mark_invalid", "preserve", "event_amendment"]
+    reason_codes: list[str]
+    failed_checks: list[str]
+    detail: str | None
+    numerical_elapsed_s: float | None
+    candidate_changed_samples: int | None
+
+
+class CandidateRepairOutcome(Contract):
+    candidate_id: str
+    record_id: str
+    region: SampleRange
+    detector: str
+    in_initial_freeze: bool
+    stages: dict
+    decisions: list[dict]
+    attempts: list[str]
+    committed_actions: list[str]
+    rescan: str
+    unresolved: bool
+    reason_codes: list[str]
+    source_version_id: str
+    released_version_id: str
+    released_changed_samples_in_region: int
+    newly_disabled_samples_in_region: int
+    waveform_mae: float | None = None
+    waveform_gain: float | None = None
+    reference_status: Literal["independent_reference_not_supplied"] = "independent_reference_not_supplied"
+
+
+class Repairability(Contract):
+    status: Literal["eligible", "need_evidence", "preserve_physiology", "unsupported", "unrecoverable_for_goal"]
+    profile_id: str | None
+    profile_version: str | None
+    calibration: str
+    species: str | None
+    device: str | None
+    modality: str
+    fs_hz: float
+    unit: str | None
+    goal: str | None
+    acceptance_spec_id: str
+    reason_codes: list[str]
+    operation: str
+    duration_s: float
+    local_period_s: float | None
+    period_fraction: float | None
+    observed_anchors: bool
+    time_supported: bool
+    event_evidence: dict | None = None

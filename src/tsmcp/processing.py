@@ -16,6 +16,11 @@ import numpy as np
 from tsmcp.core.signal import Channel, Signal
 
 VERSION = "processing.v0.2"
+PCHIP_TOOL = "interpolate_pchip"
+PCHIP_VERSION = "short-core-pchip.1"
+PCHIP_ANCHORS = 3
+CONTEXT_FILTERS = ("notch", "remove_tone", "lowpass", "local_detrend")
+CONTEXT_FILTER_VERSION = "observed-context-filter.1"
 
 
 def intervals(mask: np.ndarray) -> list[list[int]]:
@@ -221,6 +226,7 @@ class ProcessingSession:
         quality_factor: float = 30.0,
         filter_order: int = 4,
         window_s: float | None = None,
+        context_samples: int | None = None,
     ) -> Processed:
         ranges = self._ranges(ranges_samples)
         if not ranges:
@@ -231,7 +237,37 @@ class ProcessingSession:
         )
         parameters = {}
         applied = []
-        if operation == "interpolate":
+        if context_samples is not None:
+            if operation not in CONTEXT_FILTERS or type(context_samples) is not int or context_samples < 1:
+                raise ValueError("Positive external context requires a registered filter")
+            available = parent.valid & ~parent.repaired & np.isfinite(parent.values)
+            reads = []
+            for start, end in sorted(ranges):
+                lo, hi = start - context_samples, end + context_samples
+                if lo < 0 or hi > self.n or not available[lo:hi].all() or self.protected[start:end].any():
+                    raise ValueError("Filter needs uninterrupted observations on both sides of the write range")
+                if applied and start < applied[-1][1]:
+                    raise ValueError("Overlapping filter write ranges")
+                sub = ProcessingSession(parent.values[lo:hi], fs=self.fs, channel=self.channel, unit=self.unit)
+                core = [start - lo, end - lo]
+                selected = core if operation == "local_detrend" else [0, hi - lo]
+                state = sub.process(
+                    sub.raw.id,
+                    operation,
+                    [selected],
+                    frequency_hz=frequency_hz,
+                    filter_order=filter_order,
+                    quality_factor=quality_factor,
+                    window_s=window_s,
+                )
+                x[start:end] = state.values[core[0] : core[1]]
+                artifact[start:end] = True
+                parameters = state.operations[-1]["parameters"].copy()
+                actual = parameters.get("anchor_samples", context_samples)
+                reads.append([start - actual, end + actual])
+                applied.append([start, end])
+            parameters.update(context_samples=context_samples, read_ranges_samples=reads, write_policy="crop_to_core")
+        elif operation == "interpolate":
             for start, end in ranges:
                 if start == 0 or end == self.n or not valid[start - 1] or not valid[end]:
                     raise ValueError("interpolation requires finite valid anchors on both sides")
@@ -253,6 +289,38 @@ class ProcessingSession:
                 "max_gap_samples": self.max_gap_samples,
                 "max_transient_samples": self.max_transient_samples,
             }
+        elif operation == PCHIP_TOOL:
+            from scipy.interpolate import PchipInterpolator
+
+            if frequency_hz is not None or window_s is not None or filter_order != 4 or quality_factor != 30:
+                raise ValueError("PCHIP uses fixed anchors and accepts no filter parameters")
+            trusted = parent.valid & ~parent.artifact & ~parent.repaired & ~self.protected
+            anchor_support = trusted.copy()
+            limit = min(4, self.max_transient_samples if self.max_transient_samples is not None else 4)
+            for start, end in ranges:
+                if end - start > limit or not trusted[start:end].all() or not anchor_support[start:end].all():
+                    raise ValueError("PCHIP requires a distinct observed, unprotected short spike core")
+                anchor_support[start:end] = False
+            reads = []
+            for start, end in ranges:
+                left, right = start - PCHIP_ANCHORS, end + PCHIP_ANCHORS
+                if left < 0 or right > self.n:
+                    raise ValueError("PCHIP requires three consecutive observed anchors on each side")
+                anchors = np.r_[left:start, end:right]
+                if not anchor_support[anchors].all():
+                    raise ValueError("PCHIP anchors overlap unsupported samples or another core")
+                curve = PchipInterpolator(anchors, parent.values[anchors], extrapolate=False)
+                x[start:end] = curve(np.arange(start, end))
+                artifact[start:end] = repaired[start:end] = True
+                applied.append([start, end])
+                reads.append([[left, start], [end, right]])
+            parameters = dict(
+                method="pchip",
+                anchors_per_side=PCHIP_ANCHORS,
+                anchor_ranges=reads,
+                extrapolate=False,
+                max_transient_samples=limit,
+            )
         elif operation == "local_detrend":
             if self.channel != "ECG" or window_s is None or not 0.18 <= window_s <= 0.8:
                 raise ValueError("Local ECG detrending requires a 0.18–0.8 s median window")
@@ -356,7 +424,11 @@ class ProcessingSession:
         op = {
             "op": operation,
             "implementation": "tsmcp.processing",
-            "version": VERSION,
+            "version": CONTEXT_FILTER_VERSION
+            if context_samples is not None
+            else PCHIP_VERSION
+            if operation == PCHIP_TOOL
+            else VERSION,
             "ranges_samples": applied,
             "parameters": parameters,
             "parent_id": parent.id,

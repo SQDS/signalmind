@@ -1,0 +1,38 @@
+{
+  "dataset": {
+    "format": "vital",
+    "path": "/path/to/PulseDB_Vital",
+    "inventory": "/path/to/inventory.json"
+  },
+  "config": {
+    "method": "dataset_rules",
+    "tasks": [
+      "ECG",
+      "PPG",
+      "ABP"
+    ],
+    "purpose": "保留实测波形，交付原生 RR、PPI 和逐拍压力及其用途状态",
+    "patients": 2,
+    "seed": 111101,
+    "inspection_preset": "balanced",
+    "routing": "reason",
+    "secondary_probe": false,
+    "joint_views": 8,
+    "write_views": 50,
+    "atlas": true,
+    "api_cap": 0,
+    "repair_protocol": "v1.1",
+    "repair_domain": {
+      "profile_id": "human-vital-short-core",
+      "profile_version": "1.1-dev",
+      "use": "development",
+      "species": "human",
+      "device": "Vital",
+      "goals": {
+        "ECG": "ECG_RR",
+        "PPG": "PPG_PPI",
+        "ABP": "ABP_pressure"
+      }
+    }
+  }
+}

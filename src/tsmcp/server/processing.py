@@ -81,16 +81,19 @@ def build_processing_server(session: ProcessingSession, export: Callable, measur
         quality_factor: float = 30.0,
         filter_order: int = 4,
         window_s: float | None = None,
+        context_samples: int | None = None,
     ):
         """Create a new float64 signal version using one explicit operation:
         interpolate: replace selected short intervals by a line between two valid anchors, recording repaired
         points; respects separate missing-gap and finite-transient length limits, protected intervals and saturation.
         mark_invalid: retain observed values and mark the selected intervals unavailable.
+        interpolate_pchip: replace a 1–4 sample observed spike using three observed anchors on each side.
         notch: zero-phase IIR notch at frequency_hz with quality_factor, on contiguous valid segments.
         remove_tone: fit sine/cosine plus intercept at frequency_hz separately in each contiguous valid segment,
         subtract only the fitted sine/cosine, preserving the fitted intercept. Optional window_s uses overlapping
         local fits to follow amplitude/phase variation; otherwise one fit over each selected valid segment.
         lowpass: zero-phase Butterworth filter with cutoff frequency_hz and filter_order, on valid segments.
+        context_samples: filter using this many observed samples on each side and crop the write to the core.
         Input and all earlier versions remain unchanged. Explicit ranges are half-open sample indices.
         Filtering does not automatically decide whether interference exists or select its parameters."""
         try:
@@ -102,6 +105,7 @@ def build_processing_server(session: ProcessingSession, export: Callable, measur
                 quality_factor=quality_factor,
                 filter_order=filter_order,
                 window_s=window_s,
+                context_samples=context_samples,
             )
             return text(session.summary(result.id, top_k=6))
         except (KeyError, ValueError) as exc:

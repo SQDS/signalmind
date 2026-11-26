@@ -91,6 +91,7 @@ def implementation_hash():
     root = Path(__file__).resolve().parents[1]
     files = sorted((root / "cleaning").rglob("*.py"))
     files += sorted((root / "cleaning" / "vendor").glob("*.json"))
+    files += sorted((root / "cleaning" / "profiles").glob("*.json"))
     files += sorted((root / "followup").glob("*.py"))
     files += [
         root / "processing.py",

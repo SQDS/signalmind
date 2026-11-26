@@ -122,7 +122,24 @@ def _export(workspace, patch_id, out):
     csv_table(out / "measurements.csv", rows, fields)
     csv_table(out / "usable_measurements.csv", (r for r in rows if r["quality"] == "keep"), fields)
     write(out / "waveform_manifest.json", waves)
+    derived_status = {}
+    if (workspace / "export/derived-index.json").exists():
+        from .common import digest
+        from .derived_measurements import export_derived
+        from .repairability import RepairDomain
+
+        identity = read(workspace / "baselines.json")["identity"]
+        originals = read(workspace / "versions" / identity / "version.json")["results"]
+        final = {k: read(workspace / "artifacts" / w["artifact_id"] / "artifact.json") for k, w in waves.items()}
+        deployment = read(workspace / "acceptance-spec.json")["deployment"]
+        domain = RepairDomain({"repair_domain": deployment})
+        version = "rollback_" + digest([patch_id, sorted((k, v["artifact_id"]) for k, v in waves.items())])[:20]
+        idx = export_derived(workspace, cases.values(), final, originals, domain, version, out)
+        derived_status["derived_measurements"] = dict(
+            action="recomputed_from_restored_heads", rows=idx["rows"], index="derived-index.json", released=False
+        )
     result = dict(
+        **derived_status,
         scope=scope,
         status="partial",
         affected_blocks=sorted(affected),

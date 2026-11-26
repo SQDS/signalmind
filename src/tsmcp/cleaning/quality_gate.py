@@ -4,7 +4,7 @@ import numpy as np
 from scipy.signal import find_peaks
 
 from tsmcp.inspection.support import native_support
-from tsmcp.processing import intervals
+from tsmcp.processing import PCHIP_ANCHORS, PCHIP_TOOL, PCHIP_VERSION, intervals
 
 from .common import changed, digest, sha
 
@@ -22,6 +22,7 @@ ACCEPTANCE = {
 SPEC_ID = digest([ACCEPTANCE, sha(__file__)])
 OPERATIONS = {
     "interpolate",
+    PCHIP_TOOL,
     "repair",
     "mark_invalid",
     "mask_invalid",
@@ -110,7 +111,7 @@ def spike_check(case, x, valid, estimated, pr, a, b):
     return evidence
 
 
-def waveform_gate(case, before, after, operations, declared=None):
+def waveform_gate(case, before, after, operations, declared=None, *, filter_policy=None):
     """Use declared operator ranges for authorization and independently diff numerical and support writes."""
     t, x, v, e, pr = before
     t2, y, v2, e2, _ = after
@@ -138,7 +139,7 @@ def waveform_gate(case, before, after, operations, declared=None):
                 disable[a:b] = True
             if name not in ("mark_invalid", "mask_invalid"):
                 numeric[a:b] = True
-            if name in ("repair", "interpolate"):
+            if name in ("repair", "interpolate", PCHIP_TOOL):
                 interp[a:b] = True
     if declared is not None:
         permit = np.zeros(n, bool)
@@ -170,6 +171,37 @@ def waveform_gate(case, before, after, operations, declared=None):
             checks["mark_invalid"] = checks.get("mark_invalid", True) and all(
                 not v2[a:b].any() for a, b in op["ranges_samples"]
             )
+        elif name == PCHIP_TOOL:
+            from scipy.interpolate import PchipInterpolator
+
+            params = op["parameters"]
+            k = PCHIP_ANCHORS
+            regions = op["ranges_samples"]
+            ok = (
+                op.get("version") == PCHIP_VERSION
+                and params.get("method") == "pchip"
+                and params.get("anchors_per_side") == k
+                and params.get("extrapolate") is False
+                and params.get("anchor_ranges") == [[[a - k, a], [b, b + k]] for a, b in regions]
+            )
+            for a, b in regions:
+                if not (k <= a < b <= n - k and b - a <= ACCEPTANCE["spike_max_samples"]):
+                    ok = False
+                    continue
+                ix = np.r_[a - k : a, b : b + k]
+                grid = t[a - k : b + k]
+                supported = (v[ix] & ~e[ix] & ~allowed[ix] & np.isfinite(x[ix])).all()
+                continuous = np.all(
+                    np.abs(np.diff(grid) - 1 / case["fs"]) <= np.maximum(1e-6, 32 * np.spacing(abs(grid[1:])))
+                )
+                if not (supported and continuous and (v2[a:b] & e2[a:b]).all()) or any(
+                    lo < b + k and a - k < hi for lo, hi in case.get("source_time_conflicts", [])
+                ):
+                    ok = False
+                    continue
+                expected = PchipInterpolator(ix, x[ix], extrapolate=False)(np.arange(a, b))
+                ok = ok and np.array_equal(y[a:b], expected)
+            checks["registered_pchip"] = bool(ok and checks.get("registered_pchip", True))
         elif name in ("notch", "remove_tone", "lowpass", "local_detrend"):
             flags = []
             for a, b in op["ranges_samples"]:
@@ -212,13 +244,32 @@ def waveform_gate(case, before, after, operations, declared=None):
                     )
                 flags.append(bool(attenuation and dc_ok and preserved))
             checks[name] = checks.get(name, True) and all(flags)
-    return dict(status="passed" if all(checks.values()) else "rejected", checks=checks, interpolations=details)
+    filter_details = []
+    for op in operations:
+        if op["op"] in ("notch", "remove_tone", "lowpass", "local_detrend") and (
+            filter_policy or "context_samples" in op["parameters"]
+        ):
+            from .filter_retest import filter_retest
+
+            if not filter_policy:
+                checks["filter_profile"] = False
+                continue
+            specific, rows = filter_retest(case, before, after, op, filter_policy)
+            for key, value in specific.items():
+                checks[key] = bool(value and checks.get(key, True))
+            filter_details.extend(rows)
+    return dict(
+        status="passed" if all(checks.values()) else "rejected",
+        checks=checks,
+        interpolations=details,
+        **({"filter_retest": filter_details} if filter_policy else {}),
+    )
 
 
 def registered_parameters(tool, trigger, case, proposed):
     """Registered DSP recipes only. Validate parameters before calling the existing numerical operator."""
     fs = case["fs"]
-    if tool == "remove_tone" and trigger in ("line_50", "line_60"):
+    if tool in ("remove_tone", "notch") and trigger in ("line_50", "line_60"):
         hz = float(trigger[5:])
         params = {"frequency_hz": hz}
         if hz >= fs / 2:

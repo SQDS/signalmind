@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from tsmcp.processing import ProcessingSession, intervals
+from tsmcp.processing import PCHIP_ANCHORS, PCHIP_TOOL, PCHIP_VERSION, ProcessingSession, intervals
 
 from . import ledger
 from .common import array_hash, changed, digest, implementation_hash, read, sha, write
@@ -31,9 +31,12 @@ from .dataset_evidence import (
 )
 from .dataset_review import FIELDS, QUALITIES, Reviewer, applies
 from .engine import aggregate, evaluate_output, load_arrays
+from .event_hypotheses import conflict_evidence, protected_event
 from .knowledge import Knowledge
 from .provenance import check_stop, emit
 from .quality_gate import ACCEPTANCE, SPEC_ID, registered_parameters, spike_check, waveform_gate
+from .repair_candidates import comparison_context, phase_error
+from .repairability import domain_for
 from .tasks import probe
 
 
@@ -55,6 +58,8 @@ class Record:
         self.path.mkdir(parents=True, exist_ok=True)
         self.bank = bank
         self.config = config
+        self.repair_domain = domain_for(config)
+        self.acceptance_id = self.repair_domain.spec_id if self.repair_domain else SPEC_ID
         self.reviewer = reviewer
         self.implementation = implementation
         self.raw = {cid: bank["identity"][cid] for cid in self.cases}
@@ -94,6 +99,29 @@ class Record:
     def case_span(self, cid, a, b, data):
         return hit_location(dict(case=cid, a=a, b=b), self.cases, data)
 
+    def peer_context_hash(self, case, t, a, b, peers, data):
+        hashes = {}
+        for peer in peers:
+            if peer == case["id"]:
+                continue
+            pt, px, pv, pe, _ = data(peer)
+            left, right = np.searchsorted(pt, [t[a] - 5, t[b - 1] + 1 / case["fs"] + 5])
+            hashes[peer] = array_hash(pt[left:right], px[left:right], pv[left:right], pe[left:right])
+        return digest(hashes)
+
+    def stale_peer_evidence(self, hit, case, t, parents):
+        if (
+            not self.repair_domain
+            or not self.repair_domain.profile.get("comparison")
+            or "peer_context_digest" not in hit
+        ):
+            return False
+        peers = [p["id"] for p in self.cases.values() if acquisition(p) == acquisition(case)]
+        return (
+            self.peer_context_hash(case, t, hit["a"], hit["b"], peers, self.loader(parents))
+            != hit["peer_context_digest"]
+        )
+
     def plan(self, cid, parent, target, ranges, operations, hit=None):
         case = self.cases[cid]
         diagnosis = (hit or {}).get("diagnosis")
@@ -101,7 +129,7 @@ class Record:
             diagnosis = hit["trial_diagnosis"]
         diagnosis = diagnosis or dict(label="unknown", evidence_refs=[parent["content_hash"]])
         protected = []
-        if any(op["op"] in ("interpolate", "repair") for op in operations):
+        if any(op["op"] in ("interpolate", "repair", PCHIP_TOOL) for op in operations):
             meta = read(self.root / parent["probe_path"])
             bounds = meta["detector_support"]
             restricted = [
@@ -124,14 +152,19 @@ class Record:
             diagnosis=Diagnosis.model_validate(diagnosis),
             tool=Tool(
                 tool_id=operations[0]["op"] if len(operations) == 1 else "registered_recipe",
-                tool_version=self.implementation,
-                parameters={"operations": operations},
+                tool_version=PCHIP_VERSION
+                if len(operations) == 1 and operations[0]["op"] == PCHIP_TOOL
+                else self.implementation,
+                parameters={
+                    "operations": operations,
+                    **({"repair_domain": self.repair_domain.metadata(case)} if self.repair_domain else {}),
+                },
             ),
             read_ranges=[ledger.region(cid, 0, case["n"])],
             write_ranges=[ledger.region(cid, a, b) for a, b in ranges],
             protected_ranges=protected,
             expected_effects=[op["op"] for op in operations],
-            acceptance_spec_id=SPEC_ID,
+            acceptance_spec_id=self.acceptance_id,
             stop_conditions=["unsupported", "protected_physiology", "scope_violation", "failed_retest"],
         )
         write(self.path / "plans" / (plan.plan_id + ".json"), plan.model_dump(mode="json"))
@@ -139,13 +172,15 @@ class Record:
 
     def publish(self, plan, parent, candidate, check, evidence, action):
         self.phase("patch_committing")
+        if self.repair_domain:
+            check = dict(check, repair_domain=plan.tool.parameters["repair_domain"])
         receipt = ReviewReceipt(
             candidate_id=plan.candidate_id,
             candidate_revision=self.revision,
             parent_version_id=parent["artifact_id"],
             candidate_version_id=candidate["artifact_id"],
             plan_id=plan.plan_id,
-            acceptance_spec_id=SPEC_ID,
+            acceptance_spec_id=self.acceptance_id,
             hard_gate=check,
             review_decision=action,
             evidence_refs=evidence,
@@ -172,6 +207,11 @@ class Record:
             for op in self.bank["fixed_dsp"][cid]["operations"]:
                 if op.get("parameters", {}).get("source") == "public_discontinuous_excursion_rule":
                     cores[cid].update((a, b) for a, b in op["ranges_samples"])
+            if self.repair_domain and self.repair_domain.profile.get("comparison"):
+                for name in ("fixed_dsp", "rule_adaptive_dsp"):
+                    for op in self.bank.get(name, {}).get(cid, {}).get("operations", []):
+                        if op["op"] in ("repair", "interpolate", PCHIP_TOOL):
+                            cores[cid].update((a, b) for a, b in op["ranges_samples"] if b - a <= 4)
             if not cores[cid]:
                 continue
             _, x, v, e, pr = current(cid)
@@ -204,16 +244,85 @@ class Record:
                 )
         return hits
 
-    def spike_trials(self, parents, hits):
+    def qrs_conflict(self, case, before, a, b, versions, data):
+        if case["task"] != "ECG" or b - a > ACCEPTANCE["spike_max_samples"]:
+            return None
+        q = protected_event(case, before[4]["events"], a, b)
+        if q is None:
+            return None
+        peers = [p for p in self.cases.values() if p["task"] in ("PPG", "ABP") and acquisition(p) == acquisition(case)]
+        report = conflict_evidence(case, before, a, b, q, [(p, data(p["id"])) for p in peers])
+        report["versions"] = {p["id"]: versions[p["id"]]["artifact_id"] for p in [case, *peers]}
+        return report
+
+    def spike_candidate(self, c, par, a, b, inputs, old_pr, method, rec):
+        raw, t, x, v, e = inputs
+        cid = c["id"]
+        started = time.monotonic()
+        session = ProcessingSession(
+            x,
+            fs=c["fs"],
+            channel=c["task"],
+            unit=c["unit"],
+            source_id=par["content_hash"],
+            missing=~v | e,
+            max_transient_samples=min(4, int(5 * c["fs"])),
+        )
+        state = session.process(session.raw.id, method, [[a, b]])
+        candidate = evaluate_output(
+            self.root,
+            c,
+            {"hash": digest(["isolated_spike", cid, a, b] + ([PCHIP_VERSION] if method == PCHIP_TOOL else []))},
+            self.implementation,
+            par,
+            raw,
+            t,
+            x,
+            state.values,
+            v,
+            e | state.repaired,
+            state.operations,
+            started,
+        )
+        rec["candidate"] = candidate["artifact_id"]
+        # Use the same observed support in the diagnostic comparison, then exclude estimates in the release probe.
+        new_pr = probe(state.values, t, c["fs"], v, e, c["task"])
+        old, new = [
+            [z["sample"] for z in p["events"] if a - c["fs"] <= z["sample"] < b + c["fs"]] for p in (old_pr, new_pr)
+        ]
+        before_step, after_step = [float(np.max(np.abs(np.diff(y[a - 1 : b + 1])))) for y in (x, state.values)]
+        rec["retest"] = dict(before_step=before_step, after_step=after_step, before_landmarks=old, after_landmarks=new)
+        passed = (
+            len(old) == len(new)
+            and all(abs(i - j) <= 1 for i, j in zip(old, new, strict=True))
+            and after_step < before_step
+        )
+        hard = waveform_gate(
+            c, (t, x, v, e, old_pr), (t, state.values, v, e | state.repaired, new_pr), state.operations, [[a, b]]
+        )
+        hard["checks"]["native_timing_and_step"] = bool(passed)
+        hard["status"] = "passed" if all(hard["checks"].values()) else "rejected"
+        rec["hard_gate"] = hard
+        return candidate, state.values[a:b].copy()
+
+    def spike_trials(self, parents, hits, all_hits=None):
         accepted = parents.copy()
         log = []
+        policy = self.repair_domain.profile.get("comparison") if self.repair_domain else None
+        compare = policy is not None
+        cores = defaultdict(set)
+        if compare:
+            for hit in hits if all_hits is None else all_hits:
+                if hit["reason"] in ("isolated_spike_candidate", "biphasic_core", "impulsive_core"):
+                    cores[hit["case"]].add((hit["a"], hit["b"]))
         for h in hits:
             if h["reason"] != "isolated_spike_candidate" or h["wave_requested"] != "interpolate_spike":
                 continue
             check_stop(self.root)
             cid, a, b = h["case"], h["a"], h["b"]
             c, par = self.cases[cid], accepted[cid]
-            raw, t, x, v, e = load_arrays(self.root, c, par)
+            inputs = load_arrays(self.root, c, par)
+            _, t, x, v, e = inputs
             rec = dict(
                 hit=h["id"],
                 case=cid,
@@ -226,6 +335,16 @@ class Record:
                 status="ineligible",
             )
             log.append(rec)
+            if compare:
+                comparison = dict(
+                    identity=par["artifact_id"],
+                    released=par["artifact_id"],
+                    released_method="identity",
+                    nominated=None,
+                    alternatives=[],
+                    ranking=policy["ranking"],
+                )
+                rec["comparison"] = comparison
             old_pr = read(self.root / par["probe_path"])
             pre = spike_check(c, x, v, e, old_pr, a, b)
             op = dict(
@@ -233,13 +352,32 @@ class Record:
                 ranges_samples=[[a, b]],
                 parameters={"max_transient_samples": min(4, int(5 * c["fs"]))},
             )
+            rec["initial_precheck"] = pre
             plan = self.plan(cid, par, h["id"], [[a, b]], [op], h)
             left, r = max(0, a - round(5 * c["fs"])), min(len(x), b + round(5 * c["fs"]))
             if h.get("context_digest", array_hash(x[left:r], v[left:r], e[left:r])) != array_hash(
                 x[left:r], v[left:r], e[left:r]
             ):
                 pre = {"status": "insufficient_support", "reason": "stale_parent_context"}
-            rec.update(plan_id=plan.plan_id, candidate_revision=self.revision, precheck=pre)
+            if self.stale_peer_evidence(h, c, t, accepted):
+                pre = {"status": "insufficient_support", "reason": "stale_parent_context", "scope": "peer_context"}
+            rec.update(
+                plan_id=plan.plan_id,
+                candidate_revision=self.revision,
+                precheck=pre,
+            )
+            if self.repair_domain:
+                domain = self.repair_domain.assess(c, a, b, (t, x, v, e, old_pr), "interpolate", pre)
+                rec["repairability"] = domain
+                if domain["status"] != "eligible":
+                    rec.update(reason="outside_repair_profile", reason_codes=domain["reason_codes"])
+                    if compare and not self.repair_domain.metadata(c)["reason_codes"]:
+                        conflict = self.qrs_conflict(c, (t, x, v, e, old_pr), a, b, accepted, self.loader(accepted))
+                        if conflict:
+                            rec["qrs_conflict"] = conflict
+                    if h["measurement"] == "keep":
+                        h["measurement"] = "review"
+                    continue
             if pre["status"] != "evaluated_no_alert":
                 rec.update(
                     reason=pre.get("reason", pre["status"]),
@@ -248,60 +386,87 @@ class Record:
                 if h["measurement"] == "keep":
                     h["measurement"] = "review"
                 continue
-            started = time.monotonic()
-            session = ProcessingSession(
-                x,
-                fs=c["fs"],
-                channel=c["task"],
-                unit=c["unit"],
-                source_id=par["content_hash"],
-                missing=~v | e,
-                max_transient_samples=min(4, int(5 * c["fs"])),
-            )
-            state = session.process(session.raw.id, "interpolate", [[a, b]])
-            candidate = evaluate_output(
-                self.root,
-                c,
-                {"hash": digest(["isolated_spike", cid, a, b])},
-                self.implementation,
-                par,
-                raw,
-                t,
-                x,
-                state.values,
-                v,
-                e | state.repaired,
-                state.operations,
-                started,
-            )
-            rec["candidate"] = candidate["artifact_id"]
-            # Use the same observed support in the diagnostic comparison, then exclude estimates in the release probe.
-            old_pr = read(self.root / par["probe_path"])
-            new_pr = probe(state.values, t, c["fs"], v, e, c["task"])
-            old, new = [
-                [z["sample"] for z in p["events"] if a - c["fs"] <= z["sample"] < b + c["fs"]] for p in (old_pr, new_pr)
-            ]
-            before_step, after_step = [float(np.max(np.abs(np.diff(y[a - 1 : b + 1])))) for y in (x, state.values)]
-            rec["retest"] = dict(
-                before_step=before_step, after_step=after_step, before_landmarks=old, after_landmarks=new
-            )
-            passed = (
-                len(old) == len(new)
-                and all(abs(i - j) <= 1 for i, j in zip(old, new, strict=True))
-                and after_step < before_step
-            )
-            hard = waveform_gate(
-                c, (t, x, v, e, old_pr), (t, state.values, v, e | state.repaired, new_pr), state.operations, [[a, b]]
-            )
-            hard["checks"]["native_timing_and_step"] = bool(passed)
-            hard["status"] = "passed" if all(hard["checks"].values()) else "rejected"
-            rec["hard_gate"] = hard
-            if hard["status"] != "passed":
-                rec.update(status="rollback", reason="local_waveform_or_landmark_retest")
-            elif self.spent_gate_views >= self.config["write_views"]:
+            options = []
+            phase_ref = None
+            if compare:
+                ctx, phase_ref = comparison_context(c, (t, x, v, e, old_pr), a, b, cores[cid], policy)
+                comparison["evidence"] = ctx
+                comparison["identity_phase_mae"] = phase_error(x[a:b], phase_ref)
+                if "reason" in ctx:
+                    rec.update(reason=ctx["reason"], reason_codes=["need_evidence", ctx["reason"]])
+                    if h["measurement"] == "keep":
+                        h["measurement"] = "review"
+                    continue
+            methods = ("interpolate", PCHIP_TOOL) if compare else ("interpolate",)
+            for method in methods:
+                branch = dict(rec, method=method)
+                branch.pop("comparison", None)
+                proposal = plan
+                if method == PCHIP_TOOL:
+                    proposal = self.plan(
+                        cid,
+                        par,
+                        h["id"],
+                        [[a, b]],
+                        [
+                            dict(
+                                op,
+                                op=method,
+                                parameters=dict(op["parameters"], anchors_per_side=PCHIP_ANCHORS, extrapolate=False),
+                            )
+                        ],
+                        h,
+                    )
+                    branch["plan_id"] = proposal.plan_id
+                    branch["repairability"] = self.repair_domain.assess(c, a, b, (t, x, v, e, old_pr), method, pre)
+                candidate = None
+                if branch.get("repairability", {}).get("status", "eligible") != "eligible":
+                    branch.update(reason="outside_repair_profile", reason_codes=branch["repairability"]["reason_codes"])
+                else:
+                    try:
+                        candidate, core = self.spike_candidate(c, par, a, b, inputs, old_pr, method, branch)
+                    except (ValueError, FloatingPointError) as exc:
+                        if not compare:
+                            raise
+                        branch.update(status="rollback", reason=str(exc), reason_codes=["candidate_numerical_failure"])
+                    if candidate is not None:
+                        if branch["hard_gate"]["status"] != "passed":
+                            branch.update(status="rollback", reason="local_waveform_or_landmark_retest")
+                        else:
+                            branch.update(status="eligible", reason="program_checks_passed")
+                        if compare:
+                            score = phase_error(core, phase_ref)
+                            branch["phase_mae"] = score
+                            if (
+                                branch["status"] == "eligible"
+                                and score is not None
+                                and score >= comparison["identity_phase_mae"]
+                            ):
+                                branch.update(status="ineligible", reason="no_gain_against_observed_neighbours")
+                options.append((proposal, candidate, branch))
+            eligible = [z for z in options if z[2]["status"] == "eligible"]
+            if eligible:
+                plan, candidate, branch = min(eligible, key=lambda z: z[2].get("phase_mae") or 0.0)
+            else:
+                plan, candidate, branch = options[0]
+            rec.update(branch)
+            if compare:
+                comparison["nominated"] = branch["method"] if eligible else None
+                comparison["alternatives"] = [z[2] for z in options]
+                for _, _, alt in options:
+                    if alt is not branch and alt["status"] == "eligible":
+                        alt.update(status="not_selected", reason="lower_rank_or_linear_tie_break")
+            if not eligible:
+                if h["measurement"] == "keep":
+                    h["measurement"] = "review"
+                continue
+            hard = rec["hard_gate"]
+            if self.spent_gate_views >= self.config["write_views"]:
                 rec.update(status="pending", reason="write_view_budget")
             else:
                 key = "spike-" + h["id"] + ("" if self.round == 1 else "-retry")
+                if compare:
+                    key += "-" + rec["method"]
                 before = self.loader(accepted)
                 after = self.loader(accepted | {cid: candidate})
                 loc = self.case_span(cid, a, b, before)
@@ -322,6 +487,23 @@ class Record:
                                 candidate=candidate["content_hash"],
                                 native=metrics,
                                 diagnostic=rec["retest"],
+                                **(
+                                    dict(
+                                        comparison=dict(
+                                            method=rec["method"],
+                                            evidence=comparison["evidence"],
+                                            identity_phase_mae=comparison["identity_phase_mae"],
+                                            options=[
+                                                dict(
+                                                    method=z["method"], phase_mae=z.get("phase_mae"), status=z["status"]
+                                                )
+                                                for z in comparison["alternatives"]
+                                            ],
+                                        )
+                                    )
+                                    if compare
+                                    else {}
+                                ),
                                 spike_review_guide=(
                                     "Assess the numerical samples against the measured anchors, the timed "
                                     "landmarks and (if supported) the same-phase neighbours. These are observational "
@@ -331,7 +513,7 @@ class Record:
                                 ),
                                 revision=self.revision,
                                 plan_id=plan.plan_id,
-                                acceptance_spec=SPEC_ID,
+                                acceptance_spec=self.acceptance_id,
                             ),
                         )
                     ],
@@ -345,13 +527,18 @@ class Record:
                             d["decision"]
                         ],
                         reason=d["reason"],
+                        review_decision=d["decision"],
                         receipt=d["receipt"],
                     )
                     if d["decision"] == "accept":
                         self.publish(plan, par, candidate, hard, [d["receipt"]], "accept")
                         accepted[cid] = candidate
+                        if compare:
+                            comparison.update(released_method=rec["method"], released=candidate["artifact_id"])
                 else:
                     rec.update(status="pending", reason="write_review_unavailable")
+            if compare:
+                branch.update({k: val for k, val in rec.items() if k != "comparison"})
             if rec["status"] == "pending":
                 self.unresolved.append(dict(stage="spike_trial", case=cid, hit=h["id"], reason=rec["reason"]))
             if rec["status"] != "accepted" and h["measurement"] == "keep":
@@ -410,6 +597,9 @@ class Record:
                 raise ValueError("Write approval is bound to another parent or candidate revision")
             authorized = [(z.start_sample, z.end_sample) for z in plan.write_ranges]
             hard = waveform_gate(self.cases[cid], before(cid), after(cid), ops, authorized)
+            if self.repair_domain:
+                hard["checks"]["repair_domain"] = self.domain_allows_recipe(self.cases[cid], before(cid), ops)
+                hard["status"] = "passed" if all(hard["checks"].values()) else "rejected"
             plans[cid] = plan
             gates[cid] = hard
             if hard["status"] != "passed":
@@ -420,6 +610,7 @@ class Record:
                     ranges={},
                     parent_hash=parents[cid]["content_hash"],
                     candidate_hash=candidates[cid]["content_hash"],
+                    candidate=candidates[cid]["artifact_id"],
                 )
                 self.pending_ranges[cid].extend(change_ranges(before(cid), after(cid)))
                 continue
@@ -451,7 +642,7 @@ class Record:
                             hard_gate=hard,
                             revision=self.revision,
                             plan_id=plan.plan_id,
-                            acceptance_spec=SPEC_ID,
+                            acceptance_spec=self.acceptance_id,
                             changed_seconds_relative_to_view=[
                                 [(l0 - a) / self.cases[cid]["fs"], (r0 - a) / self.cases[cid]["fs"]] for l0, r0 in spans
                             ],
@@ -464,6 +655,7 @@ class Record:
                 self.spent_gate_views += 1
         self.phase("independent_review")
         decisions = self.review_writes(rows, before, after, locations)
+        queued = {r["id"] for r in rows}
         for cid, keys in needed.items():
             accepted = all(decisions.get(k, {}).get("decision") == "accept" for k in keys)
             if accepted:
@@ -482,13 +674,26 @@ class Record:
             log[cid] = dict(
                 parent_hash=parents[cid]["content_hash"],
                 candidate_hash=candidates[cid]["content_hash"],
+                candidate=candidates[cid]["artifact_id"],
                 accepted=accepted,
+                view_budget_skipped=any(k not in queued for k in keys),
                 plan_id=plans[cid].plan_id,
                 hard_gate=gates[cid],
                 ranges={k: decisions.get(k, {"decision": "pending"}) for k in keys},
             )
         write(self.path / (label + ".json"), log)
         return result
+
+    def domain_allows_recipe(self, case, before, operations):
+        filters = self.repair_domain.profile.get("filter_policy", {}).get("tools", [])
+        if any(op["op"] in filters for op in operations):
+            # Frozen coarse baselines use legacy in-window filters. Run contextual filters in fine trials.
+            return False
+        return all(
+            self.repair_domain.assess(case, a, b, before, op["op"])["status"] == "eligible"
+            for op in operations
+            for a, b in op["ranges_samples"]
+        ) and bool(operations)
 
     def coarse(self):
         self.phase("coarse_planning")
@@ -500,6 +705,9 @@ class Record:
             for cid, c in self.cases.items():
                 art = self.bank["rule_adaptive_dsp"][cid]
                 if art["content_hash"] != self.raw[cid]["content_hash"]:
+                    if self.repair_domain and not self.domain_allows_recipe(c, before(cid), art["operations"]):
+                        records[cid] = dict(status="unsupported", repair_domain=self.repair_domain.metadata(c))
+                        continue
                     hard = waveform_gate(c, before(cid), after(cid), art["operations"])
                     records[cid] = {"hard_gate": hard, "review": "not_applicable_local_baseline"}
                     if hard["status"] == "passed":
@@ -530,6 +738,15 @@ class Record:
                             veto = True
                     if veto:
                         continue
+                if (
+                    self.repair_domain
+                    and self.repair_domain.profile.get("comparison")
+                    and any(op["op"] in ("repair", "interpolate", PCHIP_TOOL) for op in art["operations"])
+                ):
+                    # Route each short core through the same-parent comparison before a numerical release.
+                    continue
+                if self.repair_domain and not self.domain_allows_recipe(c, before(cid), art["operations"]):
+                    continue
                 available[name] = art["content_hash"]
                 operations.extend((name, o["op"]) for o in art["operations"])
             if len(available) > 1:
@@ -629,7 +846,13 @@ class Record:
             ]
             roles = ["typical", "detail" if len(members) == 1 else "boundary"]
             candidate_group = reason == "isolated_spike_candidate"
-            eligibility = np.array([h.get("applicability", {}).get("status") == "evaluated_no_alert" for h in members])
+            eligibility = np.array(
+                [
+                    h.get("applicability", {}).get("status") == "evaluated_no_alert"
+                    and h.get("repairability", {}).get("status", "eligible") == "eligible"
+                    for h in members
+                ]
+            )
             if candidate_group and eligibility.any() and not eligibility.all():
                 reps = []
                 for mask in (eligibility, ~eligibility):
@@ -677,6 +900,10 @@ class Record:
                 ]
                 for i, h in enumerate(members)
             ]
+            if self.repair_domain:
+                columns.append("repairability")
+                for row, h in zip(table, members, strict=True):
+                    row.append(h["repairability"]["status"])
             requests.append(
                 dict(
                     id=gid,
@@ -684,15 +911,26 @@ class Record:
                     data=dict(
                         task=task,
                         revision=self.revision,
-                        acceptance_spec=SPEC_ID,
+                        acceptance_spec=self.acceptance_id,
                         trigger=reason,
                         evidence_ids=["view_1", "view_2", "members"],
+                        **({"repair_domain": self.repair_domain.declaration} if self.repair_domain else {}),
                         route=route,
                         scope=len(members),
                         summary=stats,
                         membership=digest(members),
                         cases=[
-                            dict(id=cid, fs=self.cases[cid]["fs"], unit=self.cases[cid]["unit"]) for cid in case_ids
+                            dict(
+                                id=cid,
+                                fs=self.cases[cid]["fs"],
+                                unit=self.cases[cid]["unit"],
+                                **(
+                                    {"domain": self.repair_domain.metadata(self.cases[cid])}
+                                    if self.repair_domain
+                                    else {}
+                                ),
+                            )
+                            for cid in case_ids
                         ],
                         columns=columns,
                         feedback=[h["feedback"] for h in examples if h.get("feedback")],
@@ -703,6 +941,22 @@ class Record:
                     ),
                 )
             )
+            if self.repair_domain and self.repair_domain.profile.get("comparison"):
+                requests[-1]["data"].update(
+                    short_core_comparison=True,
+                    contextual_filter_tools=self.repair_domain.profile.get("filter_policy", {}).get("tools", []),
+                )
+            if any(h.get("qrs_conflict") for h in members):
+                # Keep per-member evidence aligned through context pagination.
+                columns.extend(["independent_qrs", "lag_checked_pulses"])
+                for row, h in zip(table, members, strict=True):
+                    conflict = h.get("qrs_conflict", {})
+                    row.extend(
+                        [
+                            conflict.get("independent", {}).get("status"),
+                            {k: v["status"] for k, v in conflict.get("peers", {}).items()} or None,
+                        ]
+                    )
             if reason == "isolated_spike_candidate":
                 evidence = requests[-1]["data"]
                 evidence["core_samples_by_member"] = [data(h["case"])[1][h["a"] : h["b"]].tolist() for h in members]
@@ -751,7 +1005,9 @@ class Record:
         if not self.blocked:
             self.phase("repair_planning")
         write(self.path / ("repair-plans" + suffix + ".json"), plans)
+        decision_trace = {}
         for h in hits:
+            reasons = []
             plan = plans.get(h["policy_id"])
             if plan is None:
                 h.update(
@@ -763,24 +1019,56 @@ class Record:
                 h["diagnosis"] = plan.get("diagnosis", dict(label="unknown", evidence_refs=[plan["receipt"]]))
                 f = h["features"]
                 h["parameters"] = plan.get("parameters", {})
+                matches = applies(plan["wave_if"], f)
+                if not matches:
+                    reasons.append("policy_condition_not_met")
                 h.update(
-                    wave_requested=plan["wave"] if applies(plan["wave_if"], f) else "preserve",
+                    wave_requested=plan["wave"] if matches else "preserve",
                     measurement=plan["measure"] if applies(plan["measure_if"], f) else plan["otherwise"],
                     decision_source=plan["receipt"],
                 )
                 if h["reason"] == "isolated_spike_candidate" and h["wave_requested"] == "interpolate_spike":
                     eligible = h.get("applicability", {}).get("status", "insufficient_support") == "evaluated_no_alert"
                     h["trial_diagnosis"] = plan.get("trial_diagnosis", h["diagnosis"])
+                    if h["trial_diagnosis"]["label"] != "artifact":
+                        reasons.append("diagnosis_not_artifact")
                     if not eligible or h["trial_diagnosis"]["label"] != "artifact":
                         h["wave_requested"] = "preserve"
                 uncertain = h.get("support_status") in ("failed", "pending", "insufficient_support") or plan.get(
                     "diagnosis", {}
                 ).get("label") in ("mixed", "unknown")
                 if uncertain:
+                    reasons.append("need_evidence")
                     if h["wave_requested"] not in ("mark_invalid", "interpolate_spike"):
                         h["wave_requested"] = "preserve"
                     if h["measurement"] == "keep":
                         h["measurement"] = "review"
+            if self.repair_domain:
+                domain = h["repairability"]
+                unsupported = self.repair_domain.metadata(self.cases[h["case"]])["reason_codes"]
+                if unsupported or (
+                    h["wave_requested"] not in ("preserve", "mark_invalid") and domain["status"] != "eligible"
+                ):
+                    h["wave_requested"] = "preserve"
+                    if h["measurement"] == "keep":
+                        h["measurement"] = "review"
+                    reasons.extend(unsupported or domain["reason_codes"])
+            decision_trace[h["id"]] = {
+                k: h[k]
+                for k in (
+                    "policy_id",
+                    "wave_requested",
+                    "decision_source",
+                    "reason",
+                    "support_status",
+                    "applicability",
+                    "repairability",
+                    "qrs_conflict",
+                )
+                if k in h
+            }
+            decision_trace[h["id"]]["decision_reasons"] = reasons
+        write(self.path / ("decision-trace" + suffix + ".json"), decision_trace)
         if self.reviewer.enabled:
             self.unresolved.extend(
                 dict(stage="groups", group=r["id"], reason="unreviewed") for r in requests if r["id"] not in plans
@@ -794,24 +1082,48 @@ class Record:
         log = []
         for h in hits:
             op = h["wave_requested"]
-            if op not in ("remove_tone", "lowpass", "local_detrend"):
+            if op not in ("remove_tone", "lowpass", "local_detrend", "notch"):
                 continue
             cid, a, b = h["case"], h["a"], h["b"]
             c = self.cases[cid]
             par = selected[cid]
             raw, t, x, v, e = load_arrays(self.root, c, par)
             left, r = max(0, a - round(5 * c["fs"])), min(len(x), b + round(5 * c["fs"]))
-            rec = dict(hit=h["id"], case=cid, a=a, b=b, method=op, parent=par["artifact_id"])
+            rec = dict(
+                hit=h["id"],
+                case=cid,
+                a=a,
+                b=b,
+                method=op,
+                parent=par["artifact_id"],
+                candidate_revision=self.revision,
+                plan_receipt=h["decision_source"],
+                parameters=h.get("parameters", {}),
+            )
             log.append(rec)
             params = registered_parameters(op, h["reason"], c, h.get("parameters", {}))
-            if (
-                params is None
-                or not (v[a:b] & ~e[a:b]).all()
-                or h["context_digest"] != array_hash(x[left:r], v[left:r], e[left:r])
+            reasons = []
+            if self.repair_domain:
+                domain = self.repair_domain.assess(c, a, b, (t, x, v, e, read(self.root / par["probe_path"])), op)
+                rec["repairability"] = domain
+                reasons.extend(domain["reason_codes"])
+            if params is None:
+                reasons.append("method_not_applicable")
+            if not (v[a:b] & ~e[a:b]).all():
+                reasons.append("anchor_unsupported")
+            if h["context_digest"] != array_hash(x[left:r], v[left:r], e[left:r]) or self.stale_peer_evidence(
+                h, c, t, selected
             ):
-                rec.update(status="ineligible", reason="unsupported_parameters_support_or_stale_parent")
+                reasons.append("stale_evidence")
+            if reasons:
+                rec.update(
+                    status="ineligible", reason="unsupported_parameters_support_or_stale_parent", reason_codes=reasons
+                )
                 h["measurement"] = "review"
                 continue
+            policy = self.repair_domain.profile.get("filter_policy") if self.repair_domain else None
+            if policy:
+                params = dict(params, context_samples=round(c["fs"] * policy["context_s"]))
             operation = dict(op=op, ranges_samples=[[a, b]], parameters=params)
             plan = self.plan(cid, par, h["id"], [[a, b]], [operation], h)
             key = "filter-" + h["id"] + "-" + str(self.round)
@@ -822,7 +1134,13 @@ class Record:
             try:
                 state = session.process(session.raw.id, op, [[a, b]], **params)
             except ValueError as exc:
-                rec.update(status="ineligible", reason=str(exc), plan_id=plan.plan_id)
+                rec.update(
+                    status="ineligible",
+                    reason=str(exc),
+                    plan_id=plan.plan_id,
+                    reason_codes=["candidate_numerical_failure"],
+                    numerical_elapsed_s=time.monotonic() - started,
+                )
                 h["measurement"] = "review"
                 continue
             candidate = evaluate_output(
@@ -842,7 +1160,7 @@ class Record:
             )
             before = self.loader(selected)
             after = self.loader(selected | {cid: candidate})
-            hard = waveform_gate(c, before(cid), after(cid), state.operations, [[a, b]])
+            hard = waveform_gate(c, before(cid), after(cid), state.operations, [[a, b]], filter_policy=policy)
             rec.update(plan_id=plan.plan_id, candidate=candidate["artifact_id"], hard_gate=hard)
             if hard["status"] != "passed":
                 rec.update(status="rollback", reason="hard_gate")
@@ -972,6 +1290,42 @@ class Record:
                         )
                     )
             hits.extend(self.isolated_spikes(versions, hits))
+        return self.describe_hits(versions, data, cases, hits)
+
+    def describe_hits(self, versions, data, cases, hits):
+        """Bind supplied detector observations to this waveform, public context and release domain."""
+        if self.repair_domain:
+            conflicts = {}
+            for h in hits:
+                cid = h["case"]
+                ops = {
+                    "impulsive_core": "interpolate",
+                    "biphasic_core": "interpolate",
+                    "isolated_spike_candidate": "interpolate",
+                    "protected_landmark": "interpolate",
+                    "line_50": "remove_tone",
+                    "line_60": "remove_tone",
+                    "high_frequency": "lowpass",
+                    "ecg_baseline_shift": "local_detrend",
+                }
+                h["repairability"] = self.repair_domain.assess(
+                    self.cases[cid],
+                    h["a"],
+                    h["b"],
+                    data(cid),
+                    ops.get(h["reason"], "unregistered"),
+                    h.get("applicability"),
+                )
+                if (
+                    self.repair_domain.profile.get("comparison")
+                    and ops.get(h["reason"]) == "interpolate"
+                    and not self.repair_domain.metadata(self.cases[cid])["reason_codes"]
+                ):
+                    key = cid, h["a"], h["b"]
+                    if key not in conflicts:
+                        conflicts[key] = self.qrs_conflict(self.cases[cid], data(cid), h["a"], h["b"], versions, data)
+                    if conflicts[key]:
+                        h["qrs_conflict"] = conflicts[key]
         enrich(self.cases, data, self.profile, hits)
         candidates = []
         peers = defaultdict(list)
@@ -984,14 +1338,7 @@ class Record:
             a, b = h["a"], h["b"]
             left, r = max(0, a - round(5 * c["fs"])), min(len(t), b + round(5 * c["fs"]))
             h["context_digest"] = array_hash(x[left:r], v[left:r], e[left:r])
-            peer_context = {}
-            for peer in peers[acquisition(c)]:
-                if peer == cid:
-                    continue
-                pt, px, pv, pe, _ = data(peer)
-                left, right = np.searchsorted(pt, [t[a] - 5, t[b - 1] + 1 / c["fs"] + 5])
-                peer_context[peer] = array_hash(pt[left:right], px[left:right], pv[left:right], pe[left:right])
-            h["peer_context_digest"] = digest(peer_context)
+            h["peer_context_digest"] = self.peer_context_hash(c, t, a, b, peers[acquisition(c)], data)
             support = pr["detector_support"]
             if h.get("support_status") is None:
                 uncertain = any(
@@ -1121,7 +1468,7 @@ class Record:
                 dict(id=self.revision, candidates=current, targets=[h["id"] for h in todo]),
             )
             self.groups(todo, after)
-            revised = self.spike_trials(self.filter_trials(self.fine(final, todo), todo), todo)
+            revised = self.spike_trials(self.filter_trials(self.fine(final, todo), todo), todo, all_hits=residual)
             release.update((h["id"], h) for h in todo)
             if any(revised[cid]["artifact_id"] != final[cid]["artifact_id"] for cid in final):
                 final = revised
@@ -1147,6 +1494,8 @@ class Record:
                         release[h["id"]] = h
                 current = next_rows
         for cid in self.cases:
+            if self.repair_domain and self.repair_domain.metadata(self.cases[cid])["reason_codes"]:
+                self.pending_ranges[cid].append((0, self.cases[cid]["n"]))
             support = after(cid)[4]["detector_support"]
             for k in ("unsupported_ranges", "boundary_uncertain_ranges", "empty_event_ranges"):
                 self.pending_ranges[cid].extend(support[k])
@@ -1445,11 +1794,13 @@ def run_dataset(root, config, stage):
         or (root.parent / ".signalmind-knowledge" if config["method"] == "dataset_agent" else root / "knowledge")
     )
     snapshot = knowledge.freeze(root, config.get("replay_from"))
+    domain = domain_for(config)
+    acceptance_id = domain.spec_id if domain else SPEC_ID
     scope = digest(
         [
             implementation,
             snapshot["id"],
-            SPEC_ID,
+            acceptance_id,
             manifest,
             {
                 k: v
@@ -1462,7 +1813,15 @@ def run_dataset(root, config, stage):
     if spec.exists() and read(spec)["scope"] != scope:
         raise ValueError("Dataset configuration changed; use a fresh workspace")
     write(spec, dict(scope=scope))
-    write(root / "acceptance-spec.json", dict(id=SPEC_ID, checks=ACCEPTANCE, implementation=implementation))
+    write(
+        root / "acceptance-spec.json",
+        dict(
+            id=acceptance_id,
+            checks=ACCEPTANCE,
+            implementation=implementation,
+            **({"profile": domain.profile, "deployment": domain.declaration} if domain else {}),
+        ),
+    )
     results = {}
     waves = {}
     record_reports = []
@@ -1672,7 +2031,7 @@ def run_dataset(root, config, stage):
         outcome=outcome(status),
         candidate_revision=frozen["revision_id"],
         discovery_status=frozen["status"],
-        acceptance_spec_id=SPEC_ID,
+        acceptance_spec_id=acceptance_id,
     )
     state = read(root / "agent_state.json")
     state.update(outcome(status), outcome=outcome(status))
@@ -1682,7 +2041,7 @@ def run_dataset(root, config, stage):
         dict(
             scope=scope,
             release=vid,
-            acceptance_spec=SPEC_ID,
+            acceptance_spec=acceptance_id,
             coverage=summary["discovery_status"],
             reference_accuracy=None,
             evidence_ref=digest(waves),
@@ -1694,7 +2053,7 @@ def run_dataset(root, config, stage):
         scope=scope,
         implementation=implementation,
         skill_snapshot=snapshot["id"],
-        acceptance_spec_id=SPEC_ID,
+        acceptance_spec_id=acceptance_id,
         candidate_revision=frozen["revision_id"],
         records=sorted(records),
         outcome=outcome(status),
@@ -1703,5 +2062,14 @@ def run_dataset(root, config, stage):
     from .provenance import dataset_telemetry
 
     write(export / "telemetry.json", dataset_telemetry(manifest, ids, calls, time.monotonic() - started, summary))
+    from .repair_outcomes import export_outcomes
+
+    export_outcomes(root, export / "repair-outcomes")
+    summary["repair_outcomes"] = "export/repair-outcomes/summary.json"
+    if domain and domain.profile.get("comparison"):
+        from .derived_measurements import export_derived
+
+        derived = export_derived(root, manifest["cases"], results, bank["identity"], domain, vid, export)
+        summary["derived_measurements"] = dict(index="export/derived-index.json", rows=derived["rows"], released=False)
     write(export / "evaluation_report.json", summary)
     return summary

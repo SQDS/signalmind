@@ -148,7 +148,7 @@ def mixed_spikes(row):
     return bool(scope.get("eligible") and scope.get("protected"))
 
 
-def actions_for(trigger, task):
+def actions_for(trigger, task, filter_tools=()):
     extra = {
         "isolated_spike_candidate": "interpolate_spike",
         "line_50": "remove_tone",
@@ -159,6 +159,8 @@ def actions_for(trigger, task):
     actions = ["preserve", "mark_invalid"]
     if trigger in extra and not (extra[trigger] == "local_detrend" and task != "ECG"):
         actions.append(extra[trigger])
+    if trigger in ("line_50", "line_60") and "notch" in filter_tools:
+        actions.append("notch")
     return actions
 
 
@@ -307,6 +309,13 @@ class Reviewer:
         system = (
             PROMPTS[stage] + " Use submit. Give a short concrete reason in Chinese. No reference gold is available."
         )
+        if stage == "groups" and any(r["data"].get("short_core_comparison") for r in rows):
+            system = system.replace(
+                "SignalMind linear interpolation between the adjacent observed anchors "
+                "separately at each eligible core.",
+                "identity, linear and six-anchor PCHIP on one observed parent. "
+                "Only a nominated passing candidate can enter independent release review.",
+            )
         # A group carries all member measurements; keep its image pair and complete table in a single request.
         size = 1 if stage == "groups" else 4
         for batch in self.bounded(stage, rows, system, schema, size):
@@ -317,8 +326,8 @@ class Reviewer:
                     item = dict(item, properties=dict(item["properties"], trial_diagnosis=DIAGNOSIS))
                 schema = tool("submit", "Return each requested ID exactly once.", {"items": arr(item)})
             if stage == "groups":
-                action_list = actions_for(batch[0]["data"]["trigger"], batch[0]["data"]["task"])
                 data = batch[0]["data"]
+                action_list = actions_for(data["trigger"], data["task"], data.get("contextual_filter_tools", ()))
                 if "trial_scope" in data and not eligible_features(data):
                     action_list = [v for v in action_list if v != "interpolate_spike"]
                 fields = dict(SCHEMAS[stage]["properties"], wave=enum(*action_list))
@@ -337,7 +346,9 @@ class Reviewer:
                 ):
                     if stage == "coarse" and d["method"] not in r["data"]["available"]:
                         raise ValueError("Unavailable method")
-                    if stage == "groups" and d["wave"] not in actions_for(r["data"]["trigger"], r["data"]["task"]):
+                    if stage == "groups" and d["wave"] not in actions_for(
+                        r["data"]["trigger"], r["data"]["task"], r["data"].get("contextual_filter_tools", ())
+                    ):
                         raise ValueError("Operation outside registered trigger scope")
                     if stage == "groups" and d["wave"] not in ("preserve", "mark_invalid"):
                         assessment = r["data"]["diagnostic_receipt"]
@@ -409,6 +420,8 @@ class Reviewer:
                         source=str(saved),
                     )
             elif self.exhausted or not self.enabled:
+                if self.exhausted and self.enabled:
+                    emit(self.root, "decision_pending", stage=stage, ids=sorted(expected), reason="api_budget")
                 continue
             else:
                 content = []
@@ -501,6 +514,7 @@ class Reviewer:
                         if str(exc) != "api_budget_exhausted":
                             raise
                         self.exhausted = True
+                        emit(self.root, "decision_pending", stage=stage, ids=sorted(expected), reason="api_budget")
                         break
                     blocks = [b.model_dump(exclude_none=True) for b in res.content]
                     calls = [b for b in blocks if b["type"] == "tool_use"]

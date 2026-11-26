@@ -1,0 +1,67 @@
+{
+  "id": "human-vital-short-core",
+  "version": "1.1-dev",
+  "calibration": "development_only",
+  "species": "human",
+  "device": "Vital",
+  "fs_hz": 125.0,
+  "modalities": {
+    "ECG": {
+      "unit": "source_units",
+      "field": "ECG_Record",
+      "goals": [
+        "ECG_RR"
+      ]
+    },
+    "PPG": {
+      "unit": "source_units",
+      "field": "PPG_Record",
+      "goals": [
+        "PPG_PPI"
+      ]
+    },
+    "ABP": {
+      "unit": "mmHg",
+      "field": "ABP_Raw",
+      "goals": [
+        "ABP_pressure"
+      ]
+    }
+  },
+  "max_samples": 4,
+  "max_seconds": 0.032,
+  "spike_tools": [
+    "repair",
+    "interpolate",
+    "interpolate_pchip"
+  ],
+  "mask_tools": [
+    "mask_invalid",
+    "mark_invalid"
+  ],
+  "basis": "v1.0 human Vital development replay; no independent morphology or clinical calibration",
+  "comparison": {
+    "max_candidates": 2,
+    "flank_radius_s": 0.2,
+    "step_quantile": 0.85,
+    "flank_multiplier": 4.0,
+    "ranking": "observed_phase_median_then_linear"
+  },
+  "filter_policy": {
+    "tools": [
+      "notch",
+      "remove_tone",
+      "lowpass",
+      "local_detrend"
+    ],
+    "context_s": 1.0,
+    "event_shift_samples": 1,
+    "seam_ratio": 1.25,
+    "swing_ratio": [
+      0.8,
+      1.2
+    ],
+    "pressure_limit_mmhg": 2.0,
+    "calibration": "development_only"
+  }
+}

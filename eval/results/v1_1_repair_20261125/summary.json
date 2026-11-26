@@ -1,0 +1,76 @@
+{
+  "mode": "fixed_proposal_and_all_approve_test_fixture",
+  "live_model_calls": 0,
+  "development_patients": 1,
+  "perturbations": {
+    "bipolar": {
+      "injected_sites": 4,
+      "exact_core_detections": 4,
+      "accepted_exact_sites": 4,
+      "before_mae": 1.3294439815224846,
+      "after_mae": 0.002676230566772746,
+      "outside_changed": 0,
+      "estimated_samples": 8
+    },
+    "same-sign": {
+      "injected_sites": 4,
+      "exact_core_detections": 4,
+      "accepted_exact_sites": 0,
+      "before_mae": 1.329443981522485,
+      "after_mae": 1.329443981522485,
+      "outside_changed": 0,
+      "estimated_samples": 0
+    },
+    "moderate": {
+      "injected_sites": 4,
+      "exact_core_detections": 4,
+      "accepted_exact_sites": 4,
+      "before_mae": 0.3988331944567455,
+      "after_mae": 0.002676230566772746,
+      "outside_changed": 0,
+      "estimated_samples": 8
+    }
+  },
+  "deterministic_baselines": [
+    {
+      "split": "development",
+      "arm": "identity",
+      "scheduled_cases": 1,
+      "statuses": {
+        "completed": 1
+      },
+      "reference_cases": 1,
+      "sites": 4,
+      "recovered": 0,
+      "core_mae": 0.3988331944567455,
+      "normal_changed_samples": 0
+    },
+    {
+      "split": "development",
+      "arm": "interpolate",
+      "scheduled_cases": 1,
+      "statuses": {
+        "completed": 1
+      },
+      "reference_cases": 1,
+      "sites": 4,
+      "recovered": 4,
+      "core_mae": 0.0028051045293057096,
+      "normal_changed_samples": 0
+    },
+    {
+      "split": "development",
+      "arm": "interpolate_pchip",
+      "scheduled_cases": 1,
+      "statuses": {
+        "completed": 1
+      },
+      "reference_cases": 1,
+      "sites": 4,
+      "recovered": 4,
+      "core_mae": 0.0018661813603239761,
+      "normal_changed_samples": 0
+    }
+  ],
+  "identical_legacy_artifacts": 17
+}

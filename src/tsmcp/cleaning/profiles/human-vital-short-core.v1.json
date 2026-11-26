@@ -1,0 +1,42 @@
+{
+  "id": "human-vital-short-core",
+  "version": "1.0-dev",
+  "calibration": "development_only",
+  "species": "human",
+  "device": "Vital",
+  "fs_hz": 125.0,
+  "modalities": {
+    "ECG": {
+      "unit": "source_units",
+      "field": "ECG_Record",
+      "goals": [
+        "ECG_RR"
+      ]
+    },
+    "PPG": {
+      "unit": "source_units",
+      "field": "PPG_Record",
+      "goals": [
+        "PPG_PPI"
+      ]
+    },
+    "ABP": {
+      "unit": "mmHg",
+      "field": "ABP_Raw",
+      "goals": [
+        "ABP_pressure"
+      ]
+    }
+  },
+  "max_samples": 4,
+  "max_seconds": 0.032,
+  "spike_tools": [
+    "repair",
+    "interpolate"
+  ],
+  "mask_tools": [
+    "mask_invalid",
+    "mark_invalid"
+  ],
+  "basis": "v1.0 human Vital development replay; no independent morphology or clinical calibration"
+}

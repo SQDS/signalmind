@@ -28,6 +28,9 @@ def baselines(workspace):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    audit_outcomes = sub.add_parser("outcomes", help="Rebuild the repair funnel offline from an existing dataset run")
+    audit_outcomes.add_argument("--workspace", type=Path, required=True)
+    audit_outcomes.add_argument("--out", type=Path, required=True)
     contracts_cmd = sub.add_parser("contracts", help="Export the current machine-readable clean-run contracts")
     contracts_cmd.add_argument("--out", type=Path, required=True)
     undo = sub.add_parser("rollback", help="Restore a published patch's exact parent to a separate export")
@@ -80,10 +83,39 @@ def main():
             p.add_argument("--version")
             p.add_argument("--reference", type=Path)
     args = parser.parse_args()
-    if args.command == "contracts":
-        from .contracts import Candidate, Patch, RepairPlan, ReviewReceipt, Run, RunOutcome, ToolResult
+    if args.command == "outcomes":
+        from .repair_outcomes import export_outcomes
 
-        for model in (Run, RunOutcome, Candidate, ToolResult, RepairPlan, Patch, ReviewReceipt):
+        if args.out.resolve().is_relative_to(args.workspace.resolve()):
+            parser.error("For archival outcomes use an output directory outside the original workspace")
+        print(json.dumps(export_outcomes(args.workspace, args.out), ensure_ascii=False, indent=2))
+        return
+    if args.command == "contracts":
+        from .contracts import (
+            Candidate,
+            CandidateRepairOutcome,
+            Patch,
+            Repairability,
+            RepairAttempt,
+            RepairPlan,
+            ReviewReceipt,
+            Run,
+            RunOutcome,
+            ToolResult,
+        )
+
+        for model in (
+            Run,
+            RunOutcome,
+            Candidate,
+            ToolResult,
+            RepairPlan,
+            Patch,
+            ReviewReceipt,
+            RepairAttempt,
+            Repairability,
+            CandidateRepairOutcome,
+        ):
             write(args.out / (model.__name__ + ".schema.json"), model.model_json_schema())
         return
     if args.command == "rollback":

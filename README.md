@@ -2,7 +2,15 @@
 
 SignalMind 是一个面向整库生理波形的处理 Agent，支持 ECG 心搏和 RR、PPG 脉搏和 PPI、ABP 逐拍压力。它按患者、信号通道和触发原因组织初筛结果，由修补角色制定组内条件，本地执行 SignalMind 算子，再由独立上下文的复查角色检查候选。交付包含原始观测支持、实际修改、估计范围和逐拍测量的用途判定。
 
-本版接入全库候选冻结、检测器支持边界、独立复查与补丁回滚。短尖峰试修会逐成员核对适用条件，复查可以同时查看采样点、估计值和邻近心搏的同相位证据。[质量流程与发布规范](docs/signalmind/quality-plan-20261123.md) · [短尖峰修补对照](eval/results/spike-repair-20261124/README.md)
+v1.0 接入全库候选冻结、检测器支持边界、独立复查与补丁回滚。短尖峰试修会逐成员核对适用条件，复查可以同时查看采样点、估计值和邻近心搏的同相位证据。[质量流程与发布规范](docs/signalmind/quality-plan-20261123.md) · [短尖峰修补对照](eval/results/spike-repair-20261124/README.md)
+
+## v1.1 开发进度
+
+当前配置为 `1.1-dev`。短尖峰候选支持在线性插值与六锚点 PCHIP 之间选择，复查会保留可能属于真实 QRS 的观测。系统分别记录原生和估计测量，并可回溯每个候选从检测到交付的处置。三种 Agent 流程已接入同一输入、执行器和评分器。[开发记录与复现说明](docs/signalmind/v1.1-development.md)
+
+- 在同一条合成 ECG 的四个变体上，DeepSeek + SignalMind 完成 4/4 次交付，修回 1/3 处注入尖峰，正常区改动 0 点。一次性规划组和通用工具组各完成 0/4 次有效交付，后续离线协议修正仍待在线复测。[三组实测](eval/results/v1_1_ds_synthetic_20261125/README.md)
+- 在一名 Vital 开发患者的相同四处位置注入三类尖峰，离线回放修回 8/12 个注入条件，强单向尖峰均触发心搏保护。独立患者上的完整 Agent 修补效果和跨厂商对照仍待验证。[短尖峰开发回归](eval/results/v1_1_repair_20261125/README.md)
+- 在 24 名 Vital 留出患者的已知缺口上，16 毫秒缺口以 PCHIP 的中位误差最低，0.2、1 和 5 秒缺口以联合 ECG、PPG 和 ABP 的 TimesFM 最低。[TimesFM 回填实验](eval/results/timesfm-masked-ecg-20261125/README.md)
 
 ## 从哪里开始读
 
@@ -26,11 +34,11 @@ uv sync --group dev --group eval --extra cleaning --extra workbench
 
 如需运行自己的数据，按输入格式配置数据路径、通道和时间轴。命令行和本地工作台使用同一调度器。[整库运行说明](docs/signalmind/dataset-entry.md) · [本地工作台](docs/signalmind/workbench.md) · [示例配置](configs/cleaning/dataset-entry.example.json)
 
-## 本次修补实测
+## v1.0 短尖峰实测
 
 在同一名 Vital 开发患者的四个固定位置分别加入三种短尖峰，位置和评分参照固定。两版 DS 对 12 个条件均完成定位，最终修回从 1/12 增至 6/12。强双相 4/4、中等单向 2/4、强单向 0/4。三组在注入区外改写的 ECG 样本数均为 0。强单向尖峰仍受 QRS 保护，强双相的复扫达到返工上限，运行状态为部分完成。独立患者上的恢复准确率仍待验证。[汇总结果与对照口径](eval/results/spike-repair-20261124/README.md) · [心搏保护逻辑](src/tsmcp/cleaning/quality_gate.py) · [试修复查图的构造](src/tsmcp/cleaning/spike_evidence.py)
 
-开发工作区全套 1,302 项测试通过。上面的公开测试集使用生成的数据。技能晋升的隔离 worker 集成测试还需要可创建独立命名空间的 Linux、bubblewrap 及评测解释器，历史全量评测另需归档。[隔离 worker](src/tsmcp/cleaning/sandbox.py) · [评测环境设置](eval/processing_tools.py)
+v1.0 开发工作区全套 1,302 项测试通过。上面的公开测试集使用生成的数据。技能晋升的隔离 worker 集成测试还需要可创建独立命名空间的 Linux、bubblewrap 及评测解释器，历史全量评测另需归档。[隔离 worker](src/tsmcp/cleaning/sandbox.py) · [评测环境设置](eval/processing_tools.py)
 
 ## 查看自己的标注
 

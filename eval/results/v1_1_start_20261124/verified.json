@@ -1,0 +1,16 @@
+{
+  "baseline": "4e5a09fd38bf94a783359422328e0fcc4b2d0ad4",
+  "implementation": "5b8c025b1449215e3a751c318099c401dd923317f704e5d6309cbe8535d79f6d",
+  "tests": 1310,
+  "matched_artifacts": 17,
+  "historical_conditions": 12,
+  "statuses": {
+    "unsupported": 4303,
+    "preserve_physiology": 17,
+    "need_evidence": 11,
+    "eligible": 3
+  },
+  "verified_blocks": 453,
+  "historical_commits": 6,
+  "new_api_calls": 0
+}

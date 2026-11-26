@@ -7,12 +7,12 @@ from pathlib import Path
 import numpy as np
 
 from tsmcp.pipeline import apply_policy, features, select_ranges
-from tsmcp.processing import ProcessingSession, intervals
+from tsmcp.processing import PCHIP_ANCHORS, PCHIP_TOOL, ProcessingSession, intervals
 
 from .common import changed, read, time_support
 from .vendor.frozen_v01 import fixed
 
-STANDARD_OPERATIONS = {"notch", "remove_tone", "lowpass", "mark_invalid", "interpolate", "local_detrend"}
+STANDARD_OPERATIONS = {"notch", "remove_tone", "lowpass", "mark_invalid", "interpolate", PCHIP_TOOL, "local_detrend"}
 
 
 def diagnose(values, fs, valid=None):
@@ -122,6 +122,11 @@ class RecipeContext:
         allowed = STANDARD_OPERATIONS
         if operation not in allowed:
             raise ValueError(f"Operation {operation!r} is not registered in this recipe category")
+        flank = PCHIP_ANCHORS if operation == PCHIP_TOOL else parameters.get("context_samples")
+        if flank is not None:
+            for a, b in ranges:
+                if any(lo < b + flank and a - flank < hi for lo, hi in self.metadata.get("source_time_conflicts", [])):
+                    raise ValueError("Operation requires a continuous acquisition grid across its full read range")
         before = self.current
         self.current = self.session.process(before.id, operation, ranges, **parameters)
         if self.recorder:

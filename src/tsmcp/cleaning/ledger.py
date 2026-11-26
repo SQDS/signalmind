@@ -28,6 +28,10 @@ def source_row(hit, case, version, t, revision):
             state,
         ]
     )
+    if "repairability" in hit:
+        key = digest([key, hit["repairability"]])
+    if hit.get("qrs_conflict"):
+        key = digest([key, hit["qrs_conflict"]])
     return Candidate(
         candidate_id=hit["id"],
         record_id=case["record_id"],
@@ -174,6 +178,8 @@ def release_index(root, records):
                 row = dict(
                     cand.model_dump(mode="json"),
                     change=observed,
+                    **({"repairability": info["repairability"]} if "repairability" in info else {}),
+                    **({"qrs_conflict": info["qrs_conflict"]} if "qrs_conflict" in info else {}),
                     group=info.get("group"),
                     diagnosis=info.get("diagnosis"),
                     decision_ref=info.get("decision_source"),

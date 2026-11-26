@@ -1,0 +1,250 @@
+{
+  "receipt": {
+    "checkpoint": "eval/runs/timesfm3-vital-full-20261122/checkpoint",
+    "sha256": "45a6e95d2bce33281bb22de167587fbaaf748018ffd0d7ae742532bc8be7d5ab",
+    "device": "cuda:0",
+    "torch": "2.9.0+cu128",
+    "flanks_sha256": "1a7d49a2d114e5304ec9d8daf61abbd04120c2e2653aec7cdb99561463e5c4ea",
+    "jobs_sha256": "de9b11881e6648881d103bbeb66f9e46e1b7d473d797b491900d73b704f42ec0",
+    "predictions_sha256": "82dd07dbf179700a158100227e10c7e7f47388649d41097ce978ca50c3107b89",
+    "api_calls": 0
+  },
+  "synthetic": {
+    "detected": {
+      "linear": {
+        "recovered": 2,
+        "sites": 3,
+        "fixed_core_mae": 0.5024541657826002,
+        "outside_changed": 0
+      },
+      "pchip": {
+        "recovered": 2,
+        "sites": 3,
+        "fixed_core_mae": 0.5002527571907338,
+        "outside_changed": 0
+      },
+      "tfm0": {
+        "recovered": 2,
+        "sites": 3,
+        "fixed_core_mae": 0.5080082937579907,
+        "outside_changed": 0
+      }
+    },
+    "known_location": {
+      "linear": {
+        "recovered": 3,
+        "sites": 3,
+        "fixed_core_mae": 0.03447436239535425,
+        "outside_changed": 0
+      },
+      "pchip": {
+        "recovered": 3,
+        "sites": 3,
+        "fixed_core_mae": 0.006593416381278412,
+        "outside_changed": 0
+      },
+      "tfm0": {
+        "recovered": 3,
+        "sites": 3,
+        "fixed_core_mae": 0.016604474394653047,
+        "outside_changed": 0
+      }
+    }
+  },
+  "vital": [
+    {
+      "samples": 2,
+      "patients": 24,
+      "methods": {
+        "linear": {
+          "median_mae": 0.0032825935631990433,
+          "median_amplitude_ratio": null,
+          "peak_f1": 1.0,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "pchip": {
+          "median_mae": 0.0022639449265914793,
+          "median_amplitude_ratio": null,
+          "peak_f1": 1.0,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "tfm0": {
+          "median_mae": 0.005926718314488729,
+          "median_amplitude_ratio": null,
+          "peak_f1": 1.0,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "tfm2": {
+          "median_mae": 0.0047720999767382945,
+          "median_amplitude_ratio": null,
+          "peak_f1": 1.0,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "original_probe": {
+          "median_mae": 0.0,
+          "median_amplitude_ratio": null,
+          "peak_f1": 1.0,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        }
+      },
+      "peer_beats_target_only": 10,
+      "peer_beats_linear": 8
+    },
+    {
+      "samples": 25,
+      "patients": 24,
+      "methods": {
+        "linear": {
+          "median_mae": 0.07926705852150917,
+          "median_amplitude_ratio": null,
+          "peak_f1": 0.4,
+          "tp": 1,
+          "fp": 0,
+          "fn": 3
+        },
+        "pchip": {
+          "median_mae": 0.0781531630422081,
+          "median_amplitude_ratio": null,
+          "peak_f1": 0.0,
+          "tp": 0,
+          "fp": 0,
+          "fn": 4
+        },
+        "tfm0": {
+          "median_mae": 0.015023072060967726,
+          "median_amplitude_ratio": null,
+          "peak_f1": 1.0,
+          "tp": 4,
+          "fp": 0,
+          "fn": 0
+        },
+        "tfm2": {
+          "median_mae": 0.014738169338983986,
+          "median_amplitude_ratio": null,
+          "peak_f1": 1.0,
+          "tp": 4,
+          "fp": 0,
+          "fn": 0
+        },
+        "original_probe": {
+          "median_mae": 0.0,
+          "median_amplitude_ratio": null,
+          "peak_f1": 1.0,
+          "tp": 4,
+          "fp": 0,
+          "fn": 0
+        }
+      },
+      "peer_beats_target_only": 16,
+      "peer_beats_linear": 22
+    },
+    {
+      "samples": 125,
+      "patients": 24,
+      "methods": {
+        "linear": {
+          "median_mae": 0.11276046559214592,
+          "median_amplitude_ratio": 0.07991242614735204,
+          "peak_f1": 0.0,
+          "tp": 0,
+          "fp": 0,
+          "fn": 28
+        },
+        "pchip": {
+          "median_mae": 0.11464635668439403,
+          "median_amplitude_ratio": 0.07723698939993995,
+          "peak_f1": 0.0,
+          "tp": 0,
+          "fp": 0,
+          "fn": 28
+        },
+        "tfm0": {
+          "median_mae": 0.029926173935067794,
+          "median_amplitude_ratio": 0.8786240144891885,
+          "peak_f1": 0.9818181818181818,
+          "tp": 27,
+          "fp": 0,
+          "fn": 1
+        },
+        "tfm2": {
+          "median_mae": 0.02336248797574606,
+          "median_amplitude_ratio": 0.9115214326282095,
+          "peak_f1": 1.0,
+          "tp": 28,
+          "fp": 0,
+          "fn": 0
+        },
+        "original_probe": {
+          "median_mae": 0.0,
+          "median_amplitude_ratio": 1.0,
+          "peak_f1": 1.0,
+          "tp": 28,
+          "fp": 0,
+          "fn": 0
+        }
+      },
+      "peer_beats_target_only": 18,
+      "peer_beats_linear": 24
+    },
+    {
+      "samples": 625,
+      "patients": 24,
+      "methods": {
+        "linear": {
+          "median_mae": 0.10702695325016975,
+          "median_amplitude_ratio": 0.055674477556331904,
+          "peak_f1": 0.0,
+          "tp": 0,
+          "fp": 0,
+          "fn": 148
+        },
+        "pchip": {
+          "median_mae": 0.10677654419622479,
+          "median_amplitude_ratio": 0.056880509771899054,
+          "peak_f1": 0.0,
+          "tp": 0,
+          "fp": 0,
+          "fn": 148
+        },
+        "tfm0": {
+          "median_mae": 0.051079878760525936,
+          "median_amplitude_ratio": 0.6408149246176722,
+          "peak_f1": 0.8313725490196079,
+          "tp": 106,
+          "fp": 1,
+          "fn": 42
+        },
+        "tfm2": {
+          "median_mae": 0.03916893838420345,
+          "median_amplitude_ratio": 0.820308702644394,
+          "peak_f1": 0.9411764705882353,
+          "tp": 136,
+          "fp": 5,
+          "fn": 12
+        },
+        "original_probe": {
+          "median_mae": 0.0,
+          "median_amplitude_ratio": 1.0,
+          "peak_f1": 0.9659863945578231,
+          "tp": 142,
+          "fp": 4,
+          "fn": 6
+        }
+      },
+      "peer_beats_target_only": 22,
+      "peer_beats_linear": 24
+    }
+  ],
+  "status": "offline_candidates_only",
+  "context_samples_per_side": 512
+}

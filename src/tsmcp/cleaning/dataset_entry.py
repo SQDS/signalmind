@@ -10,6 +10,7 @@ from tsmcp.inspection.scan import PRESETS
 from .common import digest, implementation_hash, read, sha, write
 from .context import ContextBuilder
 from .provenance import freeze_implementation
+from .repairability import domain_for
 
 METHODS = {"dataset_rules", "dataset_agent", "inspect_only"}
 
@@ -41,6 +42,7 @@ def settings(config):
             raise ValueError(f"Invalid {key}")
     if c["routing"] == "jev" and c["jev_token_cap"] <= 0:
         raise ValueError("Set jev_token_cap for JEV routing")
+    domain_for(c)
     ContextBuilder(c)
     if type(c.get("inspection_wall_seconds", 3600)) is not int or c.get("inspection_wall_seconds", 3600) <= 0:
         raise ValueError("Invalid inspection wall budget")

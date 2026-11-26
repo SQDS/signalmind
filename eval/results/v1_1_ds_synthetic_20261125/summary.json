@@ -1,0 +1,268 @@
+{
+  "mode": "official_deepseek_live",
+  "model_requested": "deepseek-flash",
+  "models_returned": [
+    "deepseek-flash"
+  ],
+  "input_generation": "formula only",
+  "virtual_records": 1,
+  "cases": 4,
+  "injections": 3,
+  "controls": 1,
+  "manifest_sha256": "b182646d94922a871aca5efc66bfe978f349e3748b662740211c240441bb910c",
+  "frozen_method_sources": "f251e423b81669a95c596e96cef38bf7a5a79d9310e95bf4607345650207b68b",
+  "program_snapshot": "d007be3c2d14e911a227bb951a7a4f136cb45518c7c0368b0c5b35a1daaf9108",
+  "arms": {
+    "generic_tool_agent": {
+      "assignments": 4,
+      "status": {
+        "budget_exhausted": 4
+      },
+      "recovered": 0,
+      "fixed_core_mae": 1.05,
+      "normal_changed": 0,
+      "calls": 32,
+      "estimated_usd": 0.033299256
+    },
+    "one_shot_planner": {
+      "assignments": 4,
+      "status": {
+        "invalid_output": 4
+      },
+      "recovered": 0,
+      "fixed_core_mae": 1.05,
+      "normal_changed": 0,
+      "calls": 4,
+      "estimated_usd": 0.007654847999999999
+    },
+    "signalmind_full": {
+      "assignments": 4,
+      "status": {
+        "completed": 4
+      },
+      "recovered": 1,
+      "fixed_core_mae": 0.7167921921139758,
+      "normal_changed": 0,
+      "calls": 13,
+      "estimated_usd": 0.009956316
+    }
+  },
+  "rows": [
+    {
+      "case": "C031",
+      "arm": "generic_tool_agent",
+      "stratum": "between_beats_biphasic",
+      "status": "budget_exhausted",
+      "reason": [
+        "turn_limit"
+      ],
+      "proposal_count": 2,
+      "n_candidates_detected": 1,
+      "injected_sites": 1,
+      "recovered": 0,
+      "core_mae": 1.0,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 0
+    },
+    {
+      "case": "C084",
+      "arm": "generic_tool_agent",
+      "stratum": "unchanged",
+      "status": "budget_exhausted",
+      "reason": [
+        "turn_limit"
+      ],
+      "proposal_count": 1,
+      "n_candidates_detected": 0,
+      "injected_sites": 0,
+      "recovered": 0,
+      "core_mae": null,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 0
+    },
+    {
+      "case": "C052",
+      "arm": "generic_tool_agent",
+      "stratum": "near_qrs_biphasic",
+      "status": "budget_exhausted",
+      "reason": [
+        "turn_limit"
+      ],
+      "proposal_count": 3,
+      "n_candidates_detected": 0,
+      "injected_sites": 1,
+      "recovered": 0,
+      "core_mae": 1.5,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 0
+    },
+    {
+      "case": "C017",
+      "arm": "generic_tool_agent",
+      "stratum": "between_beats_single_sign",
+      "status": "budget_exhausted",
+      "reason": [
+        "turn_limit"
+      ],
+      "proposal_count": 2,
+      "n_candidates_detected": 1,
+      "injected_sites": 1,
+      "recovered": 0,
+      "core_mae": 0.65,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 0
+    },
+    {
+      "case": "C031",
+      "arm": "one_shot_planner",
+      "stratum": "between_beats_biphasic",
+      "status": "invalid_output",
+      "reason": [
+        "no_tool_submission"
+      ],
+      "proposal_count": 0,
+      "n_candidates_detected": 1,
+      "injected_sites": 1,
+      "recovered": 0,
+      "core_mae": 1.0,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 0
+    },
+    {
+      "case": "C084",
+      "arm": "one_shot_planner",
+      "stratum": "unchanged",
+      "status": "invalid_output",
+      "reason": [
+        "Invalid one-shot plan: Unknown detected candidate"
+      ],
+      "proposal_count": 1,
+      "n_candidates_detected": 0,
+      "injected_sites": 0,
+      "recovered": 0,
+      "core_mae": null,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 0
+    },
+    {
+      "case": "C052",
+      "arm": "one_shot_planner",
+      "stratum": "near_qrs_biphasic",
+      "status": "invalid_output",
+      "reason": [
+        "'plan_schema_version' is a required property"
+      ],
+      "proposal_count": 0,
+      "n_candidates_detected": 0,
+      "injected_sites": 1,
+      "recovered": 0,
+      "core_mae": 1.5,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 0
+    },
+    {
+      "case": "C017",
+      "arm": "one_shot_planner",
+      "stratum": "between_beats_single_sign",
+      "status": "invalid_output",
+      "reason": [
+        "Invalid one-shot plan: Unregistered short-core operator, version or parameters"
+      ],
+      "proposal_count": 1,
+      "n_candidates_detected": 1,
+      "injected_sites": 1,
+      "recovered": 0,
+      "core_mae": 0.65,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 0
+    },
+    {
+      "case": "C031",
+      "arm": "signalmind_full",
+      "stratum": "between_beats_biphasic",
+      "status": "completed",
+      "reason": [],
+      "proposal_count": 1,
+      "n_candidates_detected": 1,
+      "injected_sites": 1,
+      "recovered": 1,
+      "core_mae": 0.00037657634192762857,
+      "normal_changed": 0,
+      "candidate_fallback": false,
+      "approved_native_samples": 2700
+    },
+    {
+      "case": "C084",
+      "arm": "signalmind_full",
+      "stratum": "unchanged",
+      "status": "completed",
+      "reason": [],
+      "proposal_count": 0,
+      "n_candidates_detected": 0,
+      "injected_sites": 0,
+      "recovered": 0,
+      "core_mae": null,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 2800
+    },
+    {
+      "case": "C052",
+      "arm": "signalmind_full",
+      "stratum": "near_qrs_biphasic",
+      "status": "completed",
+      "reason": [],
+      "proposal_count": 0,
+      "n_candidates_detected": 0,
+      "injected_sites": 1,
+      "recovered": 0,
+      "core_mae": 1.5,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 2700
+    },
+    {
+      "case": "C017",
+      "arm": "signalmind_full",
+      "stratum": "between_beats_single_sign",
+      "status": "completed",
+      "reason": [],
+      "proposal_count": 0,
+      "n_candidates_detected": 1,
+      "injected_sites": 1,
+      "recovered": 0,
+      "core_mae": 0.65,
+      "normal_changed": 0,
+      "candidate_fallback": true,
+      "approved_native_samples": 2700
+    }
+  ],
+  "interface_probes": [
+    {
+      "passed": false,
+      "image": true,
+      "roundtrip": false,
+      "calls": 2
+    },
+    {
+      "passed": true,
+      "image": true,
+      "roundtrip": true,
+      "calls": 2
+    }
+  ],
+  "transport_attempts": 53,
+  "returned": 53,
+  "estimated_usd": 0.05172222,
+  "unknown_reserve_usd": 0,
+  "actual_billed_usd": null,
+  "incremental_cap_usd": 0.5
+}

@@ -159,7 +159,7 @@ def run_job(workspace, cases, recipe, implementation, parents):
                     parameters = {
                         k: v
                         for k, v in op["parameters"].items()
-                        if k in {"frequency_hz", "quality_factor", "filter_order", "window_s"}
+                        if k in {"frequency_hz", "quality_factor", "filter_order", "window_s", "context_samples"}
                     }
                     replay.apply(op["op"], op["ranges_samples"], **parameters)
                 if not (

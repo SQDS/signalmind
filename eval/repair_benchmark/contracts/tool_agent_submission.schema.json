@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signalmind.invalid/proposal/tool_agent_submission.schema.json",
+  "title": "Proposed tool agent final submission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submission_schema_version",
+    "submission_status",
+    "case_id",
+    "input_hash",
+    "profile_id",
+    "selected_candidate_handle",
+    "action_plan",
+    "observed_tool_result_refs",
+    "unresolved_ranges",
+    "summary"
+  ],
+  "properties": {
+    "submission_schema_version": {
+      "const": "tool-agent.proposed.v1"
+    },
+    "submission_status": {
+      "const": "proposed"
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "selected_candidate_handle": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "action_plan": {
+      "anyOf": [
+        {
+          "$ref": "action_plan.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observed_tool_result_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unresolved_ranges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sample_range"
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "selected_candidate_handle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action_plan": {
+          "type": "null"
+        }
+      }
+    },
+    {
+      "properties": {
+        "selected_candidate_handle": {
+          "type": "null"
+        },
+        "action_plan": {
+          "type": "object"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sample_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "channel_id",
+        "start_sample",
+        "end_sample"
+      ],
+      "properties": {
+        "channel_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_sample": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_sample": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "description": "Global half-open sample range; end > start and bounds are runtime semantic checks."
+    }
+  },
+  "$comment": "The .invalid identifier is an offline namespace, not a network endpoint. Resolve the relative schema from this package; do not download. Case, input and profile bindings and handle ownership require semantic checks."
+}

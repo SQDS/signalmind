@@ -1,0 +1,134 @@
+{
+  "mode": "offline_recorded_proposals",
+  "model_requests": 0,
+  "live_manifest_sha256": "b182646d94922a871aca5efc66bfe978f349e3748b662740211c240441bb910c",
+  "rows": [
+    {
+      "case_id": "C031",
+      "arm": "generic_tool_agent",
+      "turn": 6,
+      "name": "run_candidate",
+      "original_status": "invalid_output",
+      "offline_status": "invalid_output",
+      "decision": "preserve",
+      "reason_codes": [
+        "Operator read or write range is insufficient"
+      ]
+    },
+    {
+      "case_id": "C031",
+      "arm": "generic_tool_agent",
+      "turn": 7,
+      "name": "run_candidate",
+      "original_status": "invalid_output",
+      "offline_status": "invalid_output",
+      "decision": "preserve",
+      "reason_codes": [
+        "Operator read or write range is insufficient"
+      ]
+    },
+    {
+      "case_id": "C031",
+      "arm": "one_shot_planner",
+      "turn": 1,
+      "name": "submit_plan",
+      "original_status": "invalid_output",
+      "offline_status": "invalid_output",
+      "reason_codes": [
+        "No complete parseable JSON submission"
+      ]
+    },
+    {
+      "case_id": "C084",
+      "arm": "generic_tool_agent",
+      "turn": 7,
+      "name": "run_candidate",
+      "original_status": "invalid_output",
+      "offline_status": "invalid_output",
+      "decision": "preserve",
+      "reason_codes": [
+        "Unknown detected candidate"
+      ]
+    },
+    {
+      "case_id": "C084",
+      "arm": "one_shot_planner",
+      "turn": 1,
+      "name": "submit_plan",
+      "original_status": "invalid_output",
+      "offline_status": "invalid_output",
+      "decision": "preserve",
+      "reason_codes": [
+        "Unknown detected candidate"
+      ]
+    },
+    {
+      "case_id": "C052",
+      "arm": "generic_tool_agent",
+      "turn": 3,
+      "name": "run_candidate",
+      "original_status": "invalid_output",
+      "offline_status": "invalid_output",
+      "decision": "preserve",
+      "reason_codes": [
+        "Unknown detected candidate"
+      ]
+    },
+    {
+      "case_id": "C052",
+      "arm": "one_shot_planner",
+      "turn": 1,
+      "name": "submit_plan",
+      "original_status": "invalid_output",
+      "offline_status": "invalid_output",
+      "reason_codes": [
+        "'plan_schema_version' is a required property"
+      ]
+    },
+    {
+      "case_id": "C017",
+      "arm": "generic_tool_agent",
+      "turn": 6,
+      "name": "run_candidate",
+      "original_status": "invalid_output",
+      "offline_status": "invalid_output",
+      "decision": "preserve",
+      "reason_codes": [
+        "Conflicting writes on the shared parent"
+      ]
+    },
+    {
+      "case_id": "C017",
+      "arm": "generic_tool_agent",
+      "turn": 7,
+      "name": "run_candidate",
+      "original_status": "completed",
+      "offline_status": "completed",
+      "decision": "waveform_repair",
+      "reason_codes": [],
+      "private_core_mae_after_offline_execution": 0.003681502584981372
+    },
+    {
+      "case_id": "C017",
+      "arm": "generic_tool_agent",
+      "turn": 8,
+      "name": "run_candidate",
+      "original_status": "invalid_output",
+      "offline_status": "completed",
+      "decision": "waveform_repair",
+      "reason_codes": [],
+      "private_core_mae_after_offline_execution": 0.00038169523027375973
+    },
+    {
+      "case_id": "C017",
+      "arm": "one_shot_planner",
+      "turn": 1,
+      "name": "submit_plan",
+      "original_status": "invalid_output",
+      "offline_status": "completed",
+      "decision": "waveform_repair",
+      "reason_codes": [],
+      "private_core_mae_after_offline_execution": 0.00038169523027375973
+    }
+  ]
+}
